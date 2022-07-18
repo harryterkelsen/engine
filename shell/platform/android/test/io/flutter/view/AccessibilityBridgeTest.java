@@ -6,9 +6,10 @@ package io.flutter.view;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doAnswer;
@@ -26,6 +27,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.graphics.Rect;
 import android.os.Bundle;
+import android.text.SpannableString;
 import android.text.SpannedString;
 import android.text.style.LocaleSpan;
 import android.text.style.TtsSpan;
@@ -38,6 +40,8 @@ import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
+import androidx.test.core.app.ApplicationProvider;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
 import io.flutter.plugin.platform.PlatformViewsAccessibilityDelegate;
 import io.flutter.view.AccessibilityBridge.Flag;
@@ -49,12 +53,10 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.invocation.InvocationOnMock;
-import org.robolectric.RobolectricTestRunner;
-import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
 @Config(manifest = Config.NONE)
-@RunWith(RobolectricTestRunner.class)
+@RunWith(AndroidJUnit4.class)
 @TargetApi(19)
 public class AccessibilityBridgeTest {
 
@@ -720,6 +722,65 @@ public class AccessibilityBridgeTest {
     assertEquals(actual.getSpanEnd(spellOutSpan), 9);
   }
 
+  @TargetApi(21)
+  @Test
+  public void itSetsTextCorrectly() {
+    AccessibilityChannel mockChannel = mock(AccessibilityChannel.class);
+    AccessibilityViewEmbedder mockViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityManager mockManager = mock(AccessibilityManager.class);
+    View mockRootView = mock(View.class);
+    Context context = mock(Context.class);
+    when(mockRootView.getContext()).thenReturn(context);
+    when(context.getPackageName()).thenReturn("test");
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            /*rootAccessibilityView=*/ mockRootView,
+            /*accessibilityChannel=*/ mockChannel,
+            /*accessibilityManager=*/ mockManager,
+            /*contentResolver=*/ null,
+            /*accessibilityViewEmbedder=*/ mockViewEmbedder,
+            /*platformViewsAccessibilityDelegate=*/ null);
+
+    ViewParent mockParent = mock(ViewParent.class);
+    when(mockRootView.getParent()).thenReturn(mockParent);
+    when(mockManager.isEnabled()).thenReturn(true);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    root.value = "value";
+    TestStringAttribute attribute = new TestStringAttributeSpellOut();
+    attribute.start = 1;
+    attribute.end = 2;
+    attribute.type = TestStringAttributeType.SPELLOUT;
+    root.valueAttributes = new ArrayList<>();
+    root.valueAttributes.add(attribute);
+
+    TestSemanticsUpdate testSemanticsUpdate = root.toUpdate();
+    testSemanticsUpdate.sendUpdateToBridge(accessibilityBridge);
+    AccessibilityNodeInfo nodeInfo = accessibilityBridge.createAccessibilityNodeInfo(0);
+    SpannableString actual = (SpannableString) nodeInfo.getContentDescription();
+    assertEquals(actual.toString(), "value");
+    Object[] objectSpans = actual.getSpans(0, actual.length(), Object.class);
+    assertEquals(objectSpans.length, 1);
+    TtsSpan spellOutSpan = (TtsSpan) objectSpans[0];
+    assertEquals(spellOutSpan.getType(), TtsSpan.TYPE_VERBATIM);
+    assertEquals(actual.getSpanStart(spellOutSpan), 1);
+    assertEquals(actual.getSpanEnd(spellOutSpan), 2);
+
+    // Perform a set text action.
+    Bundle bundle = new Bundle();
+    String expectedText = "a";
+    bundle.putString(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, expectedText);
+    accessibilityBridge.performAction(0, AccessibilityNodeInfo.ACTION_SET_TEXT, bundle);
+
+    // The action should remove the string attributes.
+    nodeInfo = accessibilityBridge.createAccessibilityNodeInfo(0);
+    actual = (SpannableString) nodeInfo.getContentDescription();
+    assertEquals(actual.toString(), expectedText);
+    objectSpans = actual.getSpans(0, actual.length(), Object.class);
+    assertEquals(objectSpans.length, 0);
+  }
+
   @TargetApi(28)
   @Test
   public void itSetsTooltipCorrectly() {
@@ -1107,6 +1168,107 @@ public class AccessibilityBridgeTest {
   }
 
   @Test
+  public void itAlsoFireSelectionEventWhenPredictCursorMovements() {
+    AccessibilityChannel mockChannel = mock(AccessibilityChannel.class);
+    AccessibilityViewEmbedder mockViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityManager mockManager = mock(AccessibilityManager.class);
+    View mockRootView = mock(View.class);
+    Context context = mock(Context.class);
+    when(mockRootView.getContext()).thenReturn(context);
+    when(context.getPackageName()).thenReturn("test");
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            /*rootAccessibilityView=*/ mockRootView,
+            /*accessibilityChannel=*/ mockChannel,
+            /*accessibilityManager=*/ mockManager,
+            /*contentResolver=*/ null,
+            /*accessibilityViewEmbedder=*/ mockViewEmbedder,
+            /*platformViewsAccessibilityDelegate=*/ null);
+
+    ViewParent mockParent = mock(ViewParent.class);
+    when(mockRootView.getParent()).thenReturn(mockParent);
+    when(mockManager.isEnabled()).thenReturn(true);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode node1 = new TestSemanticsNode();
+    node1.id = 1;
+    node1.value = "some text";
+    node1.textSelectionBase = 0;
+    node1.textSelectionExtent = 0;
+    node1.addFlag(AccessibilityBridge.Flag.IS_TEXT_FIELD);
+    root.children.add(node1);
+    TestSemanticsUpdate testSemanticsUpdate = root.toUpdate();
+    testSemanticsUpdate.sendUpdateToBridge(accessibilityBridge);
+    Bundle bundle = new Bundle();
+    bundle.putInt(
+        AccessibilityNodeInfo.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT,
+        AccessibilityNodeInfo.MOVEMENT_GRANULARITY_CHARACTER);
+    bundle.putBoolean(AccessibilityNodeInfo.ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, false);
+    accessibilityBridge.performAction(
+        1, AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY, bundle);
+    ArgumentCaptor<AccessibilityEvent> eventCaptor =
+        ArgumentCaptor.forClass(AccessibilityEvent.class);
+    verify(mockParent, times(2))
+        .requestSendAccessibilityEvent(eq(mockRootView), eventCaptor.capture());
+    AccessibilityEvent event = eventCaptor.getAllValues().get(1);
+    assertEquals(event.getEventType(), AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED);
+    assertEquals(event.getText().toString(), "[" + node1.value + "]");
+    assertEquals(event.getFromIndex(), 1);
+    assertEquals(event.getToIndex(), 1);
+    assertEquals(event.getItemCount(), node1.value.length());
+  }
+
+  @Test
+  public void itDoesNotFireSelectionEventWhenPredictCursorMovementsDoesNotChangeSelection() {
+    AccessibilityChannel mockChannel = mock(AccessibilityChannel.class);
+    AccessibilityViewEmbedder mockViewEmbedder = mock(AccessibilityViewEmbedder.class);
+    AccessibilityManager mockManager = mock(AccessibilityManager.class);
+    View mockRootView = mock(View.class);
+    Context context = mock(Context.class);
+    when(mockRootView.getContext()).thenReturn(context);
+    when(context.getPackageName()).thenReturn("test");
+    AccessibilityBridge accessibilityBridge =
+        setUpBridge(
+            /*rootAccessibilityView=*/ mockRootView,
+            /*accessibilityChannel=*/ mockChannel,
+            /*accessibilityManager=*/ mockManager,
+            /*contentResolver=*/ null,
+            /*accessibilityViewEmbedder=*/ mockViewEmbedder,
+            /*platformViewsAccessibilityDelegate=*/ null);
+
+    ViewParent mockParent = mock(ViewParent.class);
+    when(mockRootView.getParent()).thenReturn(mockParent);
+    when(mockManager.isEnabled()).thenReturn(true);
+
+    TestSemanticsNode root = new TestSemanticsNode();
+    root.id = 0;
+    TestSemanticsNode node1 = new TestSemanticsNode();
+    node1.id = 1;
+    node1.value = "some text";
+    node1.textSelectionBase = 0;
+    node1.textSelectionExtent = 0;
+    node1.addFlag(AccessibilityBridge.Flag.IS_TEXT_FIELD);
+    root.children.add(node1);
+    TestSemanticsUpdate testSemanticsUpdate = root.toUpdate();
+    testSemanticsUpdate.sendUpdateToBridge(accessibilityBridge);
+    Bundle bundle = new Bundle();
+    bundle.putInt(
+        AccessibilityNodeInfo.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT,
+        AccessibilityNodeInfo.MOVEMENT_GRANULARITY_CHARACTER);
+    bundle.putBoolean(AccessibilityNodeInfo.ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN, false);
+    accessibilityBridge.performAction(
+        1, AccessibilityNodeInfo.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY, bundle);
+    ArgumentCaptor<AccessibilityEvent> eventCaptor =
+        ArgumentCaptor.forClass(AccessibilityEvent.class);
+    verify(mockParent, times(1))
+        .requestSendAccessibilityEvent(eq(mockRootView), eventCaptor.capture());
+    assertEquals(eventCaptor.getAllValues().size(), 1);
+    AccessibilityEvent event = eventCaptor.getAllValues().get(0);
+    assertNotEquals(event.getEventType(), AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED);
+  }
+
+  @Test
   public void itCanPredictCursorMovementsWithGranularityWordUnicode() {
     AccessibilityChannel mockChannel = mock(AccessibilityChannel.class);
     AccessibilityViewEmbedder mockViewEmbedder = mock(AccessibilityViewEmbedder.class);
@@ -1337,7 +1499,7 @@ public class AccessibilityBridgeTest {
     PlatformViewsAccessibilityDelegate accessibilityDelegate =
         mock(PlatformViewsAccessibilityDelegate.class);
 
-    Context context = RuntimeEnvironment.application.getApplicationContext();
+    Context context = ApplicationProvider.getApplicationContext();
     View rootAccessibilityView = new View(context);
     AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
     AccessibilityBridge accessibilityBridge =
@@ -1381,7 +1543,7 @@ public class AccessibilityBridgeTest {
     PlatformViewsAccessibilityDelegate accessibilityDelegate =
         mock(PlatformViewsAccessibilityDelegate.class);
 
-    Context context = RuntimeEnvironment.application.getApplicationContext();
+    Context context = ApplicationProvider.getApplicationContext();
     View rootAccessibilityView = new View(context);
     AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
     AccessibilityBridge accessibilityBridge =
@@ -1416,7 +1578,7 @@ public class AccessibilityBridgeTest {
     PlatformViewsAccessibilityDelegate accessibilityDelegate =
         mock(PlatformViewsAccessibilityDelegate.class);
 
-    Context context = RuntimeEnvironment.application.getApplicationContext();
+    Context context = ApplicationProvider.getApplicationContext();
     View rootAccessibilityView = new View(context);
     AccessibilityViewEmbedder accessibilityViewEmbedder = mock(AccessibilityViewEmbedder.class);
     AccessibilityBridge accessibilityBridge =

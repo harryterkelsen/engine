@@ -16,10 +16,6 @@ namespace {
 // constant for machines running at 100% scaling.
 constexpr int base_dpi = 96;
 
-// TODO: See if this can be queried from the OS; this value is chosen
-// arbitrarily to get something that feels reasonable.
-constexpr int kScrollOffsetMultiplier = 20;
-
 // Maps a Flutter cursor name to an HCURSOR.
 //
 // Returns the arrow cursor for unknown constants.
@@ -75,6 +71,7 @@ FlutterWindowWin32::~FlutterWindowWin32() {}
 
 void FlutterWindowWin32::SetView(WindowBindingHandlerDelegate* window) {
   binding_handler_delegate_ = window;
+  direct_manipulation_owner_->SetBindingHandlerDelegate(window);
 }
 
 WindowsRenderTarget FlutterWindowWin32::GetRenderTarget() {
@@ -138,6 +135,12 @@ void FlutterWindowWin32::OnResize(unsigned int width, unsigned int height) {
   }
 }
 
+void FlutterWindowWin32::OnPaint() {
+  if (binding_handler_delegate_ != nullptr) {
+    binding_handler_delegate_->OnWindowRepaint();
+  }
+}
+
 void FlutterWindowWin32::OnPointerMove(double x,
                                        double y,
                                        FlutterPointerDeviceKind device_kind,
@@ -171,9 +174,11 @@ void FlutterWindowWin32::OnPointerUp(double x,
   }
 }
 
-void FlutterWindowWin32::OnPointerLeave(FlutterPointerDeviceKind device_kind,
+void FlutterWindowWin32::OnPointerLeave(double x,
+                                        double y,
+                                        FlutterPointerDeviceKind device_kind,
                                         int32_t device_id) {
-  binding_handler_delegate_->OnPointerLeave(device_kind, device_id);
+  binding_handler_delegate_->OnPointerLeave(x, y, device_kind, device_id);
 }
 
 void FlutterWindowWin32::OnSetCursor() {
@@ -184,14 +189,15 @@ void FlutterWindowWin32::OnText(const std::u16string& text) {
   binding_handler_delegate_->OnText(text);
 }
 
-bool FlutterWindowWin32::OnKey(int key,
+void FlutterWindowWin32::OnKey(int key,
                                int scancode,
                                int action,
                                char32_t character,
                                bool extended,
-                               bool was_down) {
-  return binding_handler_delegate_->OnKey(key, scancode, action, character,
-                                          extended, was_down);
+                               bool was_down,
+                               KeyEventCallback callback) {
+  binding_handler_delegate_->OnKey(key, scancode, action, character, extended,
+                                   was_down, std::move(callback));
 }
 
 void FlutterWindowWin32::OnComposeBegin() {
@@ -211,6 +217,10 @@ void FlutterWindowWin32::OnComposeChange(const std::u16string& text,
   binding_handler_delegate_->OnComposeChange(text, cursor_pos);
 }
 
+void FlutterWindowWin32::OnUpdateSemanticsEnabled(bool enabled) {
+  binding_handler_delegate_->OnUpdateSemanticsEnabled(enabled);
+}
+
 void FlutterWindowWin32::OnScroll(double delta_x,
                                   double delta_y,
                                   FlutterPointerDeviceKind device_kind,
@@ -220,7 +230,7 @@ void FlutterWindowWin32::OnScroll(double delta_x,
 
   ScreenToClient(GetWindowHandle(), &point);
   binding_handler_delegate_->OnScroll(point.x, point.y, delta_x, delta_y,
-                                      kScrollOffsetMultiplier, device_kind,
+                                      GetScrollOffsetMultiplier(), device_kind,
                                       device_id);
 }
 
@@ -232,10 +242,14 @@ void FlutterWindowWin32::OnCursorRectUpdated(const Rect& rect) {
   UpdateCursorRect(Rect(origin, size));
 }
 
+void FlutterWindowWin32::OnResetImeComposing() {
+  AbortImeComposing();
+}
+
 bool FlutterWindowWin32::OnBitmapSurfaceUpdated(const void* allocation,
                                                 size_t row_bytes,
                                                 size_t height) {
-  HDC dc = ::GetDC(std::get<HWND>(GetRenderTarget()));
+  HDC dc = ::GetDC(GetWindowHandle());
   BITMAPINFO bmi;
   memset(&bmi, 0, sizeof(bmi));
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -247,7 +261,19 @@ bool FlutterWindowWin32::OnBitmapSurfaceUpdated(const void* allocation,
   bmi.bmiHeader.biSizeImage = 0;
   int ret = SetDIBitsToDevice(dc, 0, 0, row_bytes / 4, height, 0, 0, 0, height,
                               allocation, &bmi, DIB_RGB_COLORS);
+  ::ReleaseDC(GetWindowHandle(), dc);
   return ret != 0;
+}
+
+gfx::NativeViewAccessible FlutterWindowWin32::GetNativeViewAccessible() {
+  return binding_handler_delegate_->GetNativeViewAccessible();
+}
+
+PointerLocation FlutterWindowWin32::GetPrimaryPointerLocation() {
+  POINT point;
+  GetCursorPos(&point);
+  ScreenToClient(GetWindowHandle(), &point);
+  return {(size_t)point.x, (size_t)point.y};
 }
 
 }  // namespace flutter

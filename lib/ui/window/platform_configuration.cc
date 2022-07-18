@@ -82,29 +82,6 @@ void SetNeedsReportTimings(Dart_NativeArguments args) {
       ->SetNeedsReportTimings(value);
 }
 
-void ReportUnhandledException(Dart_NativeArguments args) {
-  UIDartState::ThrowIfUIOperationsProhibited();
-
-  Dart_Handle exception = nullptr;
-
-  auto error_name =
-      tonic::DartConverter<std::string>::FromArguments(args, 0, exception);
-  if (exception) {
-    Dart_ThrowException(exception);
-    return;
-  }
-
-  auto stack_trace =
-      tonic::DartConverter<std::string>::FromArguments(args, 1, exception);
-  if (exception) {
-    Dart_ThrowException(exception);
-    return;
-  }
-
-  UIDartState::Current()->ReportUnhandledException(std::move(error_name),
-                                                   std::move(stack_trace));
-}
-
 Dart_Handle SendPlatformMessage(Dart_Handle window,
                                 const std::string& name,
                                 Dart_Handle callback,
@@ -120,7 +97,7 @@ Dart_Handle SendPlatformMessage(Dart_Handle window,
   if (!Dart_IsNull(callback)) {
     response = fml::MakeRefCounted<PlatformMessageResponseDart>(
         tonic::DartPersistentValue(dart_state, callback),
-        dart_state->GetTaskRunners().GetUITaskRunner());
+        dart_state->GetTaskRunners().GetUITaskRunner(), name);
   }
   if (Dart_IsNull(data_handle)) {
     dart_state->platform_configuration()->client()->HandlePlatformMessage(
@@ -181,15 +158,6 @@ void GetPersistentIsolateData(Dart_NativeArguments args) {
                                         persistent_isolate_data->GetSize()));
 }
 
-void RespondToKeyData(Dart_Handle window, int response_id, bool handled) {
-  UIDartState::Current()->platform_configuration()->CompleteKeyDataResponse(
-      response_id, handled);
-}
-
-void _RespondToKeyData(Dart_NativeArguments args) {
-  tonic::DartCallStatic(&RespondToKeyData, args);
-}
-
 Dart_Handle ToByteData(const fml::Mapping& buffer) {
   return tonic::DartByteData::Create(buffer.GetMapping(), buffer.GetSize());
 }
@@ -206,6 +174,9 @@ PlatformConfiguration::~PlatformConfiguration() {}
 
 void PlatformConfiguration::DidCreateIsolate() {
   Dart_Handle library = Dart_LookupLibrary(tonic::ToDart("dart:ui"));
+
+  on_error_.Set(tonic::DartState::Current(),
+                Dart_GetField(library, tonic::ToDart("_onError")));
   update_locales_.Set(tonic::DartState::Current(),
                       Dart_GetField(library, tonic::ToDart("_updateLocales")));
   update_user_settings_data_.Set(
@@ -232,9 +203,8 @@ void PlatformConfiguration::DidCreateIsolate() {
                   Dart_GetField(library, tonic::ToDart("_drawFrame")));
   report_timings_.Set(tonic::DartState::Current(),
                       Dart_GetField(library, tonic::ToDart("_reportTimings")));
-  windows_.insert(
-      std::make_pair(0, std::unique_ptr<Window>(new Window{
-                            0, ViewportMetrics{1.0, 0.0, 0.0, -1}})));
+  windows_.insert(std::make_pair(
+      0, std::make_unique<Window>(0, ViewportMetrics{1.0, 0.0, 0.0, -1})));
 }
 
 void PlatformConfiguration::UpdateLocales(
@@ -246,7 +216,7 @@ void PlatformConfiguration::UpdateLocales(
   }
 
   tonic::DartState::Scope scope(dart_state);
-  tonic::LogIfError(
+  tonic::CheckAndHandleError(
       tonic::DartInvoke(update_locales_.Get(),
                         {
                             tonic::ToDart<std::vector<std::string>>(locales),
@@ -261,10 +231,10 @@ void PlatformConfiguration::UpdateUserSettingsData(const std::string& data) {
   }
   tonic::DartState::Scope scope(dart_state);
 
-  tonic::LogIfError(tonic::DartInvoke(update_user_settings_data_.Get(),
-                                      {
-                                          tonic::StdStringToDart(data),
-                                      }));
+  tonic::CheckAndHandleError(tonic::DartInvoke(update_user_settings_data_.Get(),
+                                               {
+                                                   tonic::StdStringToDart(data),
+                                               }));
 }
 
 void PlatformConfiguration::UpdateLifecycleState(const std::string& data) {
@@ -274,10 +244,10 @@ void PlatformConfiguration::UpdateLifecycleState(const std::string& data) {
     return;
   }
   tonic::DartState::Scope scope(dart_state);
-  tonic::LogIfError(tonic::DartInvoke(update_lifecycle_state_.Get(),
-                                      {
-                                          tonic::StdStringToDart(data),
-                                      }));
+  tonic::CheckAndHandleError(tonic::DartInvoke(update_lifecycle_state_.Get(),
+                                               {
+                                                   tonic::StdStringToDart(data),
+                                               }));
 }
 
 void PlatformConfiguration::UpdateSemanticsEnabled(bool enabled) {
@@ -289,8 +259,8 @@ void PlatformConfiguration::UpdateSemanticsEnabled(bool enabled) {
   tonic::DartState::Scope scope(dart_state);
   UIDartState::ThrowIfUIOperationsProhibited();
 
-  tonic::LogIfError(tonic::DartInvoke(update_semantics_enabled_.Get(),
-                                      {tonic::ToDart(enabled)}));
+  tonic::CheckAndHandleError(tonic::DartInvoke(update_semantics_enabled_.Get(),
+                                               {tonic::ToDart(enabled)}));
 }
 
 void PlatformConfiguration::UpdateAccessibilityFeatures(int32_t values) {
@@ -301,8 +271,8 @@ void PlatformConfiguration::UpdateAccessibilityFeatures(int32_t values) {
   }
   tonic::DartState::Scope scope(dart_state);
 
-  tonic::LogIfError(tonic::DartInvoke(update_accessibility_features_.Get(),
-                                      {tonic::ToDart(values)}));
+  tonic::CheckAndHandleError(tonic::DartInvoke(
+      update_accessibility_features_.Get(), {tonic::ToDart(values)}));
 }
 
 void PlatformConfiguration::DispatchPlatformMessage(
@@ -331,7 +301,7 @@ void PlatformConfiguration::DispatchPlatformMessage(
     pending_responses_[response_id] = response;
   }
 
-  tonic::LogIfError(
+  tonic::CheckAndHandleError(
       tonic::DartInvoke(dispatch_platform_message_.Get(),
                         {tonic::ToDart(message->channel()), data_handle,
                          tonic::ToDart(response_id)}));
@@ -354,17 +324,10 @@ void PlatformConfiguration::DispatchSemanticsAction(int32_t id,
     return;
   }
 
-  tonic::LogIfError(tonic::DartInvoke(
+  tonic::CheckAndHandleError(tonic::DartInvoke(
       dispatch_semantics_action_.Get(),
       {tonic::ToDart(id), tonic::ToDart(static_cast<int32_t>(action)),
        args_handle}));
-}
-
-uint64_t PlatformConfiguration::RegisterKeyDataResponse(
-    KeyDataResponse callback) {
-  uint64_t response_id = next_key_response_id_++;
-  pending_key_responses_[response_id] = std::move(callback);
-  return response_id;
 }
 
 void PlatformConfiguration::BeginFrame(fml::TimePoint frameTime,
@@ -378,7 +341,7 @@ void PlatformConfiguration::BeginFrame(fml::TimePoint frameTime,
 
   int64_t microseconds = (frameTime - fml::TimePoint()).ToMicroseconds();
 
-  tonic::LogIfError(
+  tonic::CheckAndHandleError(
       tonic::DartInvoke(begin_frame_.Get(), {
                                                 Dart_NewInteger(microseconds),
                                                 Dart_NewInteger(frame_number),
@@ -386,7 +349,7 @@ void PlatformConfiguration::BeginFrame(fml::TimePoint frameTime,
 
   UIDartState::Current()->FlushMicrotasksNow();
 
-  tonic::LogIfError(tonic::DartInvokeVoid(draw_frame_.Get()));
+  tonic::CheckAndHandleError(tonic::DartInvokeVoid(draw_frame_.Get()));
 }
 
 void PlatformConfiguration::ReportTimings(std::vector<int64_t> timings) {
@@ -410,9 +373,10 @@ void PlatformConfiguration::ReportTimings(std::vector<int64_t> timings) {
   memcpy(data, timings.data(), sizeof(int64_t) * timings.size());
   FML_CHECK(Dart_TypedDataReleaseData(data_handle));
 
-  tonic::LogIfError(tonic::DartInvoke(report_timings_.Get(), {
-                                                                 data_handle,
-                                                             }));
+  tonic::CheckAndHandleError(
+      tonic::DartInvoke(report_timings_.Get(), {
+                                                   data_handle,
+                                               }));
 }
 
 void PlatformConfiguration::CompletePlatformMessageEmptyResponse(
@@ -442,27 +406,6 @@ void PlatformConfiguration::CompletePlatformMessageResponse(
   auto response = std::move(it->second);
   pending_responses_.erase(it);
   response->Complete(std::make_unique<fml::DataMapping>(std::move(data)));
-}
-
-void PlatformConfiguration::CompleteKeyDataResponse(uint64_t response_id,
-                                                    bool handled) {
-  if (response_id == 0) {
-    return;
-  }
-  auto it = pending_key_responses_.find(response_id);
-  FML_DCHECK(it != pending_key_responses_.end());
-  if (it == pending_key_responses_.end()) {
-    return;
-  }
-  KeyDataResponse callback = std::move(it->second);
-  pending_key_responses_.erase(it);
-  // The key result callback must be called on the platform thread. This is
-  // mainly because iOS needs to block the platform message loop with a nested
-  // loop to respond to key events synchronously, and if the callback is called
-  // from another thread, it won't stop the nested message loop, causing a
-  // deadlock.
-  UIDartState::Current()->GetTaskRunners().GetPlatformTaskRunner()->PostTask(
-      [handled, callback]() { callback(handled); });
 }
 
 Dart_Handle ComputePlatformResolvedLocale(Dart_Handle supportedLocalesHandle) {
@@ -495,13 +438,10 @@ void PlatformConfiguration::RegisterNatives(
        true},
       {"PlatformConfiguration_respondToPlatformMessage",
        _RespondToPlatformMessage, 3, true},
-      {"PlatformConfiguration_respondToKeyData", _RespondToKeyData, 3, true},
       {"PlatformConfiguration_render", Render, 3, true},
       {"PlatformConfiguration_updateSemantics", UpdateSemantics, 2, true},
       {"PlatformConfiguration_setIsolateDebugName", SetIsolateDebugName, 2,
        true},
-      {"PlatformConfiguration_reportUnhandledException",
-       ReportUnhandledException, 2, true},
       {"PlatformConfiguration_setNeedsReportTimings", SetNeedsReportTimings, 2,
        true},
       {"PlatformConfiguration_getPersistentIsolateData",

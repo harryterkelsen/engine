@@ -5,20 +5,16 @@
 #ifndef FLUTTER_FLOW_LAYERS_COLOR_FILTER_LAYER_H_
 #define FLUTTER_FLOW_LAYERS_COLOR_FILTER_LAYER_H_
 
-#include "flutter/flow/layers/container_layer.h"
+#include "flutter/flow/layers/cacheable_layer.h"
+#include "flutter/flow/layers/layer.h"
 #include "third_party/skia/include/core/SkColorFilter.h"
-
 namespace flutter {
 
-class ColorFilterLayer : public ContainerLayer {
+class ColorFilterLayer : public CacheableContainerLayer {
  public:
-  ColorFilterLayer(sk_sp<SkColorFilter> filter);
-
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
+  explicit ColorFilterLayer(sk_sp<SkColorFilter> filter);
 
   void Diff(DiffContext* context, const Layer* old_layer) override;
-
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
 
   void Preroll(PrerollContext* context, const SkMatrix& matrix) override;
 
@@ -26,7 +22,6 @@ class ColorFilterLayer : public ContainerLayer {
 
  private:
   sk_sp<SkColorFilter> filter_;
-
   FML_DISALLOW_COPY_AND_ASSIGN(ColorFilterLayer);
 };
 

@@ -2,20 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "include/core/SkMatrix.h"
 #define FML_USED_ON_EMBEDDER
 
 #include <algorithm>
 #include <ctime>
-#include <functional>
 #include <future>
 #include <memory>
 #include <vector>
 
 #include "assets/directory_asset_bundle.h"
 #include "common/graphics/persistent_cache.h"
-#include "flutter/common/graphics/persistent_cache.h"
-#include "flutter/flow/layers/layer_tree.h"
-#include "flutter/flow/layers/picture_layer.h"
+#include "flutter/flow/layers/display_list_layer.h"
+#include "flutter/flow/layers/layer_raster_cache_item.h"
 #include "flutter/flow/layers/transform_layer.h"
 #include "flutter/fml/command_line.h"
 #include "flutter/fml/dart/dart_converter.h"
@@ -43,13 +42,22 @@
 #include "flutter/vulkan/vulkan_application.h"  // nogncheck
 #endif
 
+// CREATE_NATIVE_ENTRY is leaky by design
+// NOLINTBEGIN(clang-analyzer-core.StackAddressEscape)
+
 namespace flutter {
 namespace testing {
+
+using ::testing::_;
+using ::testing::Return;
+
 namespace {
 class MockPlatformViewDelegate : public PlatformView::Delegate {
   MOCK_METHOD1(OnPlatformViewCreated, void(std::unique_ptr<Surface> surface));
 
   MOCK_METHOD0(OnPlatformViewDestroyed, void());
+
+  MOCK_METHOD0(OnPlatformViewScheduleFrame, void());
 
   MOCK_METHOD1(OnPlatformViewSetNextFrameCallback,
                void(const fml::closure& closure));
@@ -62,10 +70,6 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 
   MOCK_METHOD1(OnPlatformViewDispatchPointerDataPacket,
                void(std::unique_ptr<PointerDataPacket> packet));
-
-  MOCK_METHOD2(OnPlatformViewDispatchKeyDataPacket,
-               void(std::unique_ptr<KeyDataPacket> packet,
-                    KeyDataResponse callback));
 
   MOCK_METHOD3(OnPlatformViewDispatchSemanticsAction,
                void(int32_t id,
@@ -84,6 +88,11 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   MOCK_METHOD1(OnPlatformViewMarkTextureFrameAvailable,
                void(int64_t texture_id));
 
+  MOCK_METHOD(const Settings&,
+              OnPlatformViewGetSettings,
+              (),
+              (const, override));
+
   MOCK_METHOD3(LoadDartDeferredLibrary,
                void(intptr_t loading_unit_id,
                     std::unique_ptr<const fml::Mapping> snapshot_data,
@@ -100,6 +109,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 };
 
 class MockSurface : public Surface {
+ public:
   MOCK_METHOD0(IsValid, bool());
 
   MOCK_METHOD1(AcquireFrame,
@@ -119,6 +129,34 @@ class MockPlatformView : public PlatformView {
   MockPlatformView(MockPlatformViewDelegate& delegate, TaskRunners task_runners)
       : PlatformView(delegate, task_runners) {}
   MOCK_METHOD0(CreateRenderingSurface, std::unique_ptr<Surface>());
+  MOCK_CONST_METHOD0(GetPlatformMessageHandler,
+                     std::shared_ptr<PlatformMessageHandler>());
+};
+
+class TestPlatformView : public PlatformView {
+ public:
+  TestPlatformView(Shell& shell, TaskRunners task_runners)
+      : PlatformView(shell, task_runners) {}
+  MOCK_METHOD0(CreateRenderingSurface, std::unique_ptr<Surface>());
+};
+
+class MockPlatformMessageHandler : public PlatformMessageHandler {
+ public:
+  MOCK_METHOD1(HandlePlatformMessage,
+               void(std::unique_ptr<PlatformMessage> message));
+  MOCK_METHOD2(InvokePlatformMessageResponseCallback,
+               void(int response_id, std::unique_ptr<fml::Mapping> mapping));
+  MOCK_METHOD1(InvokePlatformMessageEmptyResponseCallback,
+               void(int response_id));
+};
+
+class MockPlatformMessageResponse : public PlatformMessageResponse {
+ public:
+  static fml::RefPtr<MockPlatformMessageResponse> Create() {
+    return fml::AdoptRef(new MockPlatformMessageResponse());
+  }
+  MOCK_METHOD1(Complete, void(std::unique_ptr<fml::Mapping> data));
+  MOCK_METHOD0(CompleteEmpty, void());
 };
 }  // namespace
 
@@ -201,7 +239,7 @@ static void ValidateDestroyPlatformView(Shell* shell) {
 }
 
 static std::string CreateFlagsString(std::vector<const char*>& flags) {
-  if (flags.size() == 0) {
+  if (flags.empty()) {
     return "";
   }
   std::string flags_string = flags[0];
@@ -234,6 +272,13 @@ static void PostSync(const fml::RefPtr<fml::TaskRunner>& task_runner,
   latch.Wait();
 }
 
+static sk_sp<DisplayList> MakeSizedDisplayList(int width, int height) {
+  DisplayListCanvasRecorder recorder(SkRect::MakeXYWH(0, 0, width, height));
+  recorder.drawRect(SkRect::MakeXYWH(0, 0, width, height),
+                    SkPaint(SkColor4f::FromColor(SK_ColorRED)));
+  return recorder.Build();
+}
+
 TEST_F(ShellTest, InitializeWithInvalidThreads) {
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
   Settings settings = CreateSettingsForFixture();
@@ -246,9 +291,12 @@ TEST_F(ShellTest, InitializeWithInvalidThreads) {
 TEST_F(ShellTest, InitializeWithDifferentThreads) {
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
   Settings settings = CreateSettingsForFixture();
-  ThreadHost thread_host("io.flutter.test." + GetCurrentTestName() + ".",
-                         ThreadHost::Type::Platform | ThreadHost::Type::RASTER |
-                             ThreadHost::Type::IO | ThreadHost::Type::UI);
+  std::string name_prefix = "io.flutter.test." + GetCurrentTestName() + ".";
+  ThreadHost thread_host(ThreadHost::ThreadHostConfig(
+      name_prefix, ThreadHost::Type::Platform | ThreadHost::Type::RASTER |
+                       ThreadHost::Type::IO | ThreadHost::Type::UI));
+  ASSERT_EQ(thread_host.name_prefix, name_prefix);
+
   TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
                            thread_host.raster_thread->GetTaskRunner(),
                            thread_host.ui_thread->GetTaskRunner(),
@@ -439,12 +487,40 @@ TEST_F(ShellTest, LastEntrypoint) {
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
 }
 
-TEST_F(ShellTest, DisallowedDartVMFlag) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires fix";
-#endif  // defined(WINUWP)
+TEST_F(ShellTest, LastEntrypointArgs) {
+  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(ValidateShell(shell.get()));
 
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  ASSERT_TRUE(configuration.IsValid());
+  std::string entry_point = "fixturesAreFunctionalMain";
+  std::vector<std::string> entry_point_args = {"arg1"};
+  configuration.SetEntrypoint(entry_point);
+  configuration.SetEntrypointArgs(entry_point_args);
+
+  fml::AutoResetWaitableEvent main_latch;
+  std::vector<std::string> last_entry_point_args;
+  AddNativeCallback(
+      "SayHiFromFixturesAreFunctionalMain", CREATE_NATIVE_ENTRY([&](auto args) {
+        last_entry_point_args = shell->GetEngine()->GetLastEntrypointArgs();
+        main_latch.Signal();
+      }));
+
+  RunEngine(shell.get(), std::move(configuration));
+  main_latch.Wait();
+#if (FLUTTER_RUNTIME_MODE == FLUTTER_RUNTIME_MODE_DEBUG)
+  EXPECT_EQ(last_entry_point_args, entry_point_args);
+#else
+  ASSERT_TRUE(last_entry_point_args.empty());
+#endif
+  ASSERT_TRUE(DartVMRef::IsInstanceRunning());
+  DestroyShell(std::move(shell));
+  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+}
+
+TEST_F(ShellTest, DisallowedDartVMFlag) {
   // Run this test in a thread-safe manner, otherwise gtest will complain.
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
 
@@ -459,18 +535,14 @@ TEST_F(ShellTest, DisallowedDartVMFlag) {
 }
 
 TEST_F(ShellTest, AllowedDartVMFlag) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires fix";
-#endif  // defined(WINUWP)
   std::vector<const char*> flags = {
       "--enable-isolate-groups",
       "--no-enable-isolate-groups",
-      "--lazy_async_stacks",
   };
 #if !FLUTTER_RELEASE
   flags.push_back("--max_profile_depth 1");
   flags.push_back("--random_seed 42");
+  flags.push_back("--max_subtype_cache_entries=22");
   if (!DartVM::IsRunningPrecompiledCode()) {
     flags.push_back("--enable_mirrors");
   }
@@ -585,7 +657,7 @@ TEST_F(ShellTest, ReportTimingsIsCalled) {
   DestroyShell(std::move(shell));
 
   fml::TimePoint finish = fml::TimePoint::Now();
-  ASSERT_TRUE(timestamps.size() > 0);
+  ASSERT_TRUE(!timestamps.empty());
   ASSERT_TRUE(timestamps.size() % FrameTiming::kCount == 0);
   std::vector<FrameTiming> timings(timestamps.size() / FrameTiming::kCount);
 
@@ -681,18 +753,14 @@ TEST_F(ShellTest, ExternalEmbedderNoThreadMerger) {
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
 
   PumpOneFrame(shell.get(), 100, 100, builder);
@@ -736,18 +804,14 @@ TEST_F(ShellTest,
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
 
   PumpOneFrame(shell.get(), 100, 100, builder);
@@ -758,18 +822,15 @@ TEST_F(ShellTest,
   DestroyShell(std::move(shell));
 }
 
-// TODO(https://github.com/flutter/flutter/issues/59816): Enable on fuchsia.
 TEST_F(ShellTest,
 #if defined(OS_FUCHSIA)
+       // TODO(dworsham): https://github.com/flutter/flutter/issues/59816
+       // TODO(cbracken): https://github.com/flutter/flutter/issues/90481
        DISABLED_OnPlatformViewDestroyDisablesThreadMerger
 #else
        OnPlatformViewDestroyDisablesThreadMerger
 #endif
 ) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP. Not yet implemented";
-#endif  // defined(WINUWP)
   auto settings = CreateSettingsForFixture();
   fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger;
   auto end_frame_callback =
@@ -792,18 +853,14 @@ TEST_F(ShellTest,
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
 
   PumpOneFrame(shell.get(), 100, 100, builder);
@@ -865,18 +922,14 @@ TEST_F(ShellTest,
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
 
   PumpOneFrame(shell.get(), 100, 100, builder);
@@ -940,18 +993,14 @@ TEST_F(ShellTest,
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
 
   PumpOneFrame(shell.get(), 100, 100, builder);
@@ -1013,18 +1062,14 @@ TEST_F(ShellTest,
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
   PumpOneFrame(shell.get(), 100, 100, builder);
   end_frame_latch.Wait();
@@ -1061,18 +1106,14 @@ TEST_F(ShellTest, OnPlatformViewDestroyWithoutRasterThreadMerger) {
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
   PumpOneFrame(shell.get(), 100, 100, builder);
 
@@ -1132,18 +1173,14 @@ TEST_F(ShellTest,
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
   PumpOneFrame(shell.get(), 100, 100, builder);
   end_frame_latch.Wait();
@@ -1154,6 +1191,51 @@ TEST_F(ShellTest,
   ValidateShell(shell.get());
 
   DestroyShell(std::move(shell), std::move(task_runners));
+}
+
+TEST_F(ShellTest, GetUsedThisFrameShouldBeSetBeforeEndFrame) {
+  auto settings = CreateSettingsForFixture();
+  fml::AutoResetWaitableEvent end_frame_latch;
+  std::shared_ptr<ShellTestExternalViewEmbedder> external_view_embedder;
+  bool used_this_frame = true;
+  auto end_frame_callback =
+      [&](bool should_resubmit_frame,
+          fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger) {
+        // We expect `used_this_frame` to be false.
+        used_this_frame = external_view_embedder->GetUsedThisFrame();
+        end_frame_latch.Signal();
+      };
+  external_view_embedder = std::make_shared<ShellTestExternalViewEmbedder>(
+      end_frame_callback, PostPrerollResult::kSuccess, true);
+  auto shell = CreateShell(std::move(settings), GetTaskRunnersForFixture(),
+                           false, external_view_embedder);
+
+  // Create the surface needed by rasterizer
+  PlatformViewNotifyCreated(shell.get());
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("emptyMain");
+
+  RunEngine(shell.get(), std::move(configuration));
+
+  LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
+    fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
+        this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
+        SkPoint::Make(10, 10),
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
+  };
+  PumpOneFrame(shell.get(), 100, 100, builder);
+  end_frame_latch.Wait();
+  ASSERT_FALSE(used_this_frame);
+
+  // Validate the platform view can be recreated and destroyed again
+  ValidateShell(shell.get());
+
+  DestroyShell(std::move(shell));
 }
 
 // TODO(https://github.com/flutter/flutter/issues/59816): Enable on fuchsia.
@@ -1203,61 +1285,6 @@ TEST_F(ShellTest,
   // called.
   end_frame_latch.Wait();
   // 2 frames are submitted because `kSkipAndRetryFrame`, but only the 2nd frame
-  // should be submitted with `external_view_embedder`, hence the below check.
-  ASSERT_EQ(1, external_view_embedder->GetSubmittedFrameCount());
-
-  PlatformViewNotifyDestroyed(shell.get());
-  DestroyShell(std::move(shell));
-}
-
-// TODO(https://github.com/flutter/flutter/issues/59816): Enable on fuchsia.
-TEST_F(ShellTest,
-#if defined(OS_FUCHSIA)
-       DISABLED_ResubmitFrame
-#else
-       ResubmitFrame
-#endif
-) {
-  auto settings = CreateSettingsForFixture();
-  fml::AutoResetWaitableEvent end_frame_latch;
-  std::shared_ptr<ShellTestExternalViewEmbedder> external_view_embedder;
-  fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger_ref;
-  auto end_frame_callback =
-      [&](bool should_resubmit_frame,
-          fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger) {
-        if (!raster_thread_merger_ref) {
-          raster_thread_merger_ref = raster_thread_merger;
-        }
-        if (should_resubmit_frame && !raster_thread_merger->IsMerged()) {
-          raster_thread_merger->MergeWithLease(10);
-          external_view_embedder->UpdatePostPrerollResult(
-              PostPrerollResult::kSuccess);
-        }
-        end_frame_latch.Signal();
-      };
-  external_view_embedder = std::make_shared<ShellTestExternalViewEmbedder>(
-      end_frame_callback, PostPrerollResult::kResubmitFrame, true);
-
-  auto shell = CreateShell(std::move(settings), GetTaskRunnersForFixture(),
-                           false, external_view_embedder);
-  PlatformViewNotifyCreated(shell.get());
-
-  auto configuration = RunConfiguration::InferFromSettings(settings);
-  configuration.SetEntrypoint("emptyMain");
-  RunEngine(shell.get(), std::move(configuration));
-
-  ASSERT_EQ(0, external_view_embedder->GetSubmittedFrameCount());
-
-  PumpOneFrame(shell.get());
-  // `EndFrame` changed the post preroll result to `kSuccess` and merged the
-  // threads. During the frame, the threads are not merged, So no
-  // `external_view_embedder->GetSubmittedFrameCount()` is called.
-  end_frame_latch.Wait();
-  ASSERT_TRUE(raster_thread_merger_ref->IsMerged());
-
-  // This is the resubmitted frame, which threads are also merged.
-  end_frame_latch.Wait();
-  // 2 frames are submitted because `kResubmitFrame`, but only the 2nd frame
   // should be submitted with `external_view_embedder`, hence the below check.
   ASSERT_EQ(1, external_view_embedder->GetSubmittedFrameCount());
 
@@ -1350,11 +1377,6 @@ TEST_F(ShellTest, ReloadSystemFonts) {
 }
 
 TEST_F(ShellTest, WaitForFirstFrame) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires fix";
-#endif  // defined(WINUWP)
-
   auto settings = CreateSettingsForFixture();
   std::unique_ptr<Shell> shell = CreateShell(settings);
 
@@ -1410,11 +1432,6 @@ TEST_F(ShellTest, WaitForFirstFrameTimeout) {
 }
 
 TEST_F(ShellTest, WaitForFirstFrameMultiple) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires threading fix";
-#endif  // defined(WINUWP)
-
   auto settings = CreateSettingsForFixture();
   std::unique_ptr<Shell> shell = CreateShell(settings);
 
@@ -1439,11 +1456,6 @@ TEST_F(ShellTest, WaitForFirstFrameMultiple) {
 /// Makes sure that WaitForFirstFrame works if we rendered a frame with the
 /// single-thread setup.
 TEST_F(ShellTest, WaitForFirstFrameInlined) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires threading fix";
-#endif  // defined(WINUWP)
-
   Settings settings = CreateSettingsForFixture();
   auto task_runner = CreateNewThread();
   TaskRunners task_runners("test", task_runner, task_runner, task_runner,
@@ -1485,6 +1497,128 @@ static size_t GetRasterizerResourceCacheBytesSync(const Shell& shell) {
   return bytes;
 }
 
+TEST_F(ShellTest, MultipleFluttersSetResourceCacheBytes) {
+  TaskRunners task_runners = GetTaskRunnersForFixture();
+  auto settings = CreateSettingsForFixture();
+  settings.resource_cache_max_bytes_threshold = 4000000U;
+  GrMockOptions main_context_options;
+  sk_sp<GrDirectContext> main_context =
+      GrDirectContext::MakeMock(&main_context_options);
+  Shell::CreateCallback<PlatformView> platform_view_create_callback =
+      [task_runners, main_context](flutter::Shell& shell) {
+        auto result = std::make_unique<TestPlatformView>(shell, task_runners);
+        ON_CALL(*result, CreateRenderingSurface())
+            .WillByDefault(::testing::Invoke([main_context] {
+              auto surface = std::make_unique<MockSurface>();
+              ON_CALL(*surface, GetContext())
+                  .WillByDefault(Return(main_context.get()));
+              ON_CALL(*surface, IsValid()).WillByDefault(Return(true));
+              ON_CALL(*surface, MakeRenderContextCurrent())
+                  .WillByDefault(::testing::Invoke([] {
+                    return std::make_unique<GLContextDefaultResult>(true);
+                  }));
+              return surface;
+            }));
+        return result;
+      };
+
+  auto shell = CreateShell(
+      /*settings=*/std::move(settings),
+      /*task_runners=*/task_runners,
+      /*simulate_vsync=*/false,
+      /*shell_test_external_view_embedder=*/nullptr,
+      /*is_gpu_disabled=*/false,
+      /*rendering_backend=*/
+      ShellTestPlatformView::BackendType::kDefaultBackend,
+      /*platform_view_create_callback=*/platform_view_create_callback);
+
+  // Create the surface needed by rasterizer
+  PlatformViewNotifyCreated(shell.get());
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("emptyMain");
+
+  RunEngine(shell.get(), std::move(configuration));
+  PostSync(shell->GetTaskRunners().GetPlatformTaskRunner(), [&shell]() {
+    shell->GetPlatformView()->SetViewportMetrics({1.0, 100, 100, 22});
+  });
+
+  // first cache bytes
+  EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
+            static_cast<size_t>(480000U));
+
+  auto shell_spawn_callback = [&]() {
+    std::unique_ptr<Shell> spawn;
+    PostSync(
+        shell->GetTaskRunners().GetPlatformTaskRunner(),
+        [this, &spawn, &spawner = shell, platform_view_create_callback]() {
+          auto configuration =
+              RunConfiguration::InferFromSettings(CreateSettingsForFixture());
+          configuration.SetEntrypoint("emptyMain");
+          spawn = spawner->Spawn(
+              std::move(configuration), "", platform_view_create_callback,
+              [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+          ASSERT_NE(nullptr, spawn.get());
+          ASSERT_TRUE(ValidateShell(spawn.get()));
+        });
+    return spawn;
+  };
+
+  std::unique_ptr<Shell> second_shell = shell_spawn_callback();
+  PlatformViewNotifyCreated(second_shell.get());
+  PostSync(second_shell->GetTaskRunners().GetPlatformTaskRunner(),
+           [&second_shell]() {
+             second_shell->GetPlatformView()->SetViewportMetrics(
+                 {1.0, 100, 100, 22});
+           });
+  // first cache bytes + second cache bytes
+  EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
+            static_cast<size_t>(960000U));
+
+  PostSync(second_shell->GetTaskRunners().GetPlatformTaskRunner(),
+           [&second_shell]() {
+             second_shell->GetPlatformView()->SetViewportMetrics(
+                 {1.0, 100, 300, 22});
+           });
+  // first cache bytes + second cache bytes
+  EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
+            static_cast<size_t>(1920000U));
+
+  std::unique_ptr<Shell> third_shell = shell_spawn_callback();
+  PlatformViewNotifyCreated(third_shell.get());
+  PostSync(
+      third_shell->GetTaskRunners().GetPlatformTaskRunner(), [&third_shell]() {
+        third_shell->GetPlatformView()->SetViewportMetrics({1.0, 400, 100, 22});
+      });
+  // first cache bytes + second cache bytes + third cache bytes
+  EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
+            static_cast<size_t>(3840000U));
+
+  PostSync(
+      third_shell->GetTaskRunners().GetPlatformTaskRunner(), [&third_shell]() {
+        third_shell->GetPlatformView()->SetViewportMetrics({1.0, 800, 100, 22});
+      });
+  // max bytes threshold
+  EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
+            static_cast<size_t>(4000000U));
+  DestroyShell(std::move(third_shell), std::move(task_runners));
+  // max bytes threshold
+  EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
+            static_cast<size_t>(4000000U));
+
+  PostSync(second_shell->GetTaskRunners().GetPlatformTaskRunner(),
+           [&second_shell]() {
+             second_shell->GetPlatformView()->SetViewportMetrics(
+                 {1.0, 100, 100, 22});
+           });
+  // first cache bytes + second cache bytes
+  EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
+            static_cast<size_t>(960000U));
+
+  DestroyShell(std::move(second_shell), std::move(task_runners));
+  DestroyShell(std::move(shell), std::move(task_runners));
+}
+
 TEST_F(ShellTest, SetResourceCacheSize) {
   Settings settings = CreateSettingsForFixture();
   auto task_runner = CreateNewThread();
@@ -1503,8 +1637,11 @@ TEST_F(ShellTest, SetResourceCacheSize) {
   PumpOneFrame(shell.get());
 
   // The Vulkan and GL backends set different default values for the resource
-  // cache size.
-#ifdef SHELL_ENABLE_VULKAN
+  // cache size. The default backend (specified by the default param of
+  // `CreateShell` in this test) will only resolve to Vulkan (in
+  // `ShellTestPlatformView::Create`) if GL is disabled. This situation arises
+  // when targeting the Fuchsia Emulator.
+#if defined(SHELL_ENABLE_VULKAN) && !defined(SHELL_ENABLE_GL)
   EXPECT_EQ(GetRasterizerResourceCacheBytesSync(*shell),
             vulkan::kGrCacheMaxByteSize);
 #else
@@ -1655,7 +1792,8 @@ class MockTexture : public Texture {
              const SkRect& bounds,
              bool freeze,
              GrDirectContext* context,
-             const SkSamplingOptions&) override {}
+             const SkSamplingOptions&,
+             const SkPaint* paint) override {}
 
   void OnGrContextCreated() override {}
 
@@ -1757,6 +1895,80 @@ TEST_F(ShellTest, IsolateCanAccessPersistentIsolateData) {
   DestroyShell(std::move(shell), std::move(task_runners));
 }
 
+TEST_F(ShellTest, CanScheduleFrameFromPlatform) {
+  Settings settings = CreateSettingsForFixture();
+  TaskRunners task_runners = GetTaskRunnersForFixture();
+  fml::AutoResetWaitableEvent latch;
+  AddNativeCallback(
+      "NotifyNative",
+      CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) { latch.Signal(); }));
+  fml::AutoResetWaitableEvent check_latch;
+  AddNativeCallback("NativeOnBeginFrame",
+                    CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) {
+                      check_latch.Signal();
+                    }));
+  std::unique_ptr<Shell> shell =
+      CreateShell(std::move(settings), std::move(task_runners));
+  ASSERT_TRUE(shell->IsSetup());
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("onBeginFrameWithNotifyNativeMain");
+  RunEngine(shell.get(), std::move(configuration));
+
+  // Wait for the application to attach the listener.
+  latch.Wait();
+
+  fml::TaskRunner::RunNowOrPostTask(
+      shell->GetTaskRunners().GetPlatformTaskRunner(),
+      [&shell]() { shell->GetPlatformView()->ScheduleFrame(); });
+  check_latch.Wait();
+  DestroyShell(std::move(shell), std::move(task_runners));
+}
+
+TEST_F(ShellTest, SecondaryVsyncCallbackShouldBeCalledAfterVsyncCallback) {
+  bool is_on_begin_frame_called = false;
+  bool is_secondary_callback_called = false;
+  Settings settings = CreateSettingsForFixture();
+  TaskRunners task_runners = GetTaskRunnersForFixture();
+  fml::AutoResetWaitableEvent latch;
+  AddNativeCallback(
+      "NotifyNative",
+      CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) { latch.Signal(); }));
+  fml::CountDownLatch count_down_latch(2);
+  AddNativeCallback("NativeOnBeginFrame",
+                    CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) {
+                      EXPECT_FALSE(is_on_begin_frame_called);
+                      EXPECT_FALSE(is_secondary_callback_called);
+                      is_on_begin_frame_called = true;
+                      count_down_latch.CountDown();
+                    }));
+  std::unique_ptr<Shell> shell =
+      CreateShell(std::move(settings), std::move(task_runners));
+  ASSERT_TRUE(shell->IsSetup());
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("onBeginFrameWithNotifyNativeMain");
+  RunEngine(shell.get(), std::move(configuration));
+
+  // Wait for the application to attach the listener.
+  latch.Wait();
+
+  fml::TaskRunner::RunNowOrPostTask(
+      shell->GetTaskRunners().GetUITaskRunner(), [&]() {
+        shell->GetEngine()->ScheduleSecondaryVsyncCallback(0, [&]() {
+          EXPECT_TRUE(is_on_begin_frame_called);
+          EXPECT_FALSE(is_secondary_callback_called);
+          is_secondary_callback_called = true;
+          count_down_latch.CountDown();
+        });
+        shell->GetEngine()->ScheduleFrame();
+      });
+  count_down_latch.Wait();
+  EXPECT_TRUE(is_on_begin_frame_called);
+  EXPECT_TRUE(is_secondary_callback_called);
+  DestroyShell(std::move(shell), std::move(task_runners));
+}
+
 static void LogSkData(sk_sp<SkData> data, const char* title) {
   FML_LOG(ERROR) << "---------- " << title;
   std::ostringstream ostr;
@@ -1789,18 +2001,14 @@ TEST_F(ShellTest, Screenshot) {
   RunEngine(shell.get(), std::move(configuration));
 
   LayerTreeBuilder builder = [&](std::shared_ptr<ContainerLayer> root) {
-    SkPictureRecorder recorder;
-    SkCanvas* recording_canvas =
-        recorder.beginRecording(SkRect::MakeXYWH(0, 0, 80, 80));
-    recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, 80, 80),
-                               SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-    auto sk_picture = recorder.finishRecordingAsPicture();
     fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
         this->GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-    auto picture_layer = std::make_shared<PictureLayer>(
+    auto display_list_layer = std::make_shared<DisplayListLayer>(
         SkPoint::Make(10, 10),
-        flutter::SkiaGPUObject<SkPicture>({sk_picture, queue}), false, false);
-    root->Add(picture_layer);
+        flutter::SkiaGPUObject<DisplayList>(
+            {MakeSizedDisplayList(80, 80), queue}),
+        false, false);
+    root->Add(display_list_layer);
   };
 
   PumpOneFrame(shell.get(), 100, 100, builder);
@@ -1842,7 +2050,8 @@ TEST_F(ShellTest, CanConvertToAndFromMappings) {
   const size_t buffer_size = 2 << 20;
 
   uint8_t* buffer = static_cast<uint8_t*>(::malloc(buffer_size));
-  ASSERT_NE(buffer, nullptr);
+  // NOLINTNEXTLINE(clang-analyzer-unix.Malloc)
+  ASSERT_TRUE(buffer != nullptr);
   ASSERT_TRUE(MemsetPatternSetOrCheck(
       buffer, buffer_size, MemsetPatternOp::kMemsetPatternOpSetBuffer));
 
@@ -2030,11 +2239,6 @@ TEST_F(ShellTest, CanRegisterImageDecoders) {
 }
 
 TEST_F(ShellTest, OnServiceProtocolGetSkSLsWorks) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires vm service sandboxing fix";
-#endif  // defined(WINUWP)
-
   fml::ScopedTemporaryDirectory base_dir;
   ASSERT_TRUE(base_dir.fd().is_valid());
   PersistentCache::SetCacheDirectoryPath(base_dir.path());
@@ -2151,69 +2355,98 @@ TEST_F(ShellTest, RasterizerMakeRasterSnapshot) {
   DestroyShell(std::move(shell), std::move(task_runners));
 }
 
-static sk_sp<SkPicture> MakeSizedPicture(int width, int height) {
-  SkPictureRecorder recorder;
-  SkCanvas* recording_canvas =
-      recorder.beginRecording(SkRect::MakeXYWH(0, 0, width, height));
-  recording_canvas->drawRect(SkRect::MakeXYWH(0, 0, width, height),
-                             SkPaint(SkColor4f::FromColor(SK_ColorRED)));
-  return recorder.finishRecordingAsPicture();
-}
-
 TEST_F(ShellTest, OnServiceProtocolEstimateRasterCacheMemoryWorks) {
   Settings settings = CreateSettingsForFixture();
   std::unique_ptr<Shell> shell = CreateShell(settings);
 
   // 1. Construct a picture and a picture layer to be raster cached.
-  sk_sp<SkPicture> picture = MakeSizedPicture(10, 10);
+  sk_sp<DisplayList> display_list = MakeSizedDisplayList(10, 10);
   fml::RefPtr<SkiaUnrefQueue> queue = fml::MakeRefCounted<SkiaUnrefQueue>(
       GetCurrentTaskRunner(), fml::TimeDelta::Zero());
-  auto picture_layer = std::make_shared<PictureLayer>(
+  auto display_list_layer = std::make_shared<DisplayListLayer>(
       SkPoint::Make(0, 0),
-      flutter::SkiaGPUObject<SkPicture>({MakeSizedPicture(100, 100), queue}),
+      flutter::SkiaGPUObject<DisplayList>(
+          {MakeSizedDisplayList(100, 100), queue}),
       false, false);
-  picture_layer->set_paint_bounds(SkRect::MakeWH(100, 100));
+  display_list_layer->set_paint_bounds(SkRect::MakeWH(100, 100));
 
   // 2. Rasterize the picture and the picture layer in the raster cache.
   std::promise<bool> rasterized;
+
   shell->GetTaskRunners().GetRasterTaskRunner()->PostTask(
-      [&shell, &rasterized, &picture, &picture_layer] {
+      [&shell, &rasterized, &display_list, &display_list_layer] {
+        std::vector<RasterCacheItem*> raster_cache_items;
         auto* compositor_context = shell->GetRasterizer()->compositor_context();
         auto& raster_cache = compositor_context->raster_cache();
 
-        Stopwatch raster_time;
-        Stopwatch ui_time;
+        FixedRefreshRateStopwatch raster_time;
+        FixedRefreshRateStopwatch ui_time;
         MutatorsStack mutators_stack;
         TextureRegistry texture_registry;
+        PaintContext paint_context = {
+            // clang-format off
+            .internal_nodes_canvas         = nullptr,
+            .leaf_nodes_canvas             = nullptr,
+            .gr_context                    = nullptr,
+            .dst_color_space               = nullptr,
+            .view_embedder                 = nullptr,
+            .raster_time                   = raster_time,
+            .ui_time                       = ui_time,
+            .texture_registry              = texture_registry,
+            .raster_cache                  = &raster_cache,
+            .checkerboard_offscreen_layers = false,
+            .frame_device_pixel_ratio      = 1.0f,
+            .inherited_opacity             = SK_Scalar1,
+            // clang-format on
+        };
+
         PrerollContext preroll_context = {
-            nullptr,                 /* raster_cache */
-            nullptr,                 /* gr_context */
-            nullptr,                 /* external_view_embedder */
-            mutators_stack, nullptr, /* color_space */
-            kGiantRect,              /* cull_rect */
-            false,                   /* layer reads from surface */
-            raster_time,    ui_time, texture_registry,
-            false, /* checkerboard_offscreen_layers */
-            1.0f,  /* frame_device_pixel_ratio */
-            false, /* has_platform_view */
+            // clang-format off
+            .raster_cache                  = &raster_cache,
+            .gr_context                    = nullptr,
+            .view_embedder                 = nullptr,
+            .mutators_stack                = mutators_stack,
+            .dst_color_space               = nullptr,
+            .cull_rect                     = kGiantRect,
+            .surface_needs_readback        = false,
+            .raster_time                   = raster_time,
+            .ui_time                       = ui_time,
+            .texture_registry              = texture_registry,
+            .checkerboard_offscreen_layers = false,
+            .frame_device_pixel_ratio      = 1.0f,
+            .has_platform_view             = false,
+            .has_texture_layer             = false,
+            .raster_cached_entries         = &raster_cache_items,
+            // clang-format on
         };
 
         // 2.1. Rasterize the picture. Call Draw multiple times to pass the
         // access threshold (default to 3) so a cache can be generated.
         SkCanvas dummy_canvas;
+        SkPaint paint;
         bool picture_cache_generated;
+        DisplayListRasterCacheItem display_list_raster_cache_item(
+            display_list.get(), SkPoint(), true, false);
         for (int i = 0; i < 4; i += 1) {
           SkMatrix matrix = SkMatrix::I();
-
-          picture_cache_generated = raster_cache.Prepare(
-              &preroll_context, picture.get(), true, false, matrix);
-          raster_cache.Draw(*picture, dummy_canvas);
+          display_list_raster_cache_item.PrerollSetup(&preroll_context, matrix);
+          display_list_raster_cache_item.PrerollFinalize(&preroll_context,
+                                                         matrix);
+          picture_cache_generated =
+              display_list_raster_cache_item.need_caching();
+          display_list_raster_cache_item.TryToPrepareRasterCache(paint_context);
+          display_list_raster_cache_item.Draw(paint_context, &dummy_canvas,
+                                              &paint);
         }
         ASSERT_TRUE(picture_cache_generated);
 
         // 2.2. Rasterize the picture layer.
-        raster_cache.Prepare(&preroll_context, picture_layer.get(),
-                             SkMatrix::I());
+        LayerRasterCacheItem layer_raster_cache_item(display_list_layer.get());
+        layer_raster_cache_item.PrerollSetup(&preroll_context, SkMatrix::I());
+        layer_raster_cache_item.PrerollFinalize(&preroll_context,
+                                                SkMatrix::I());
+        layer_raster_cache_item.TryToPrepareRasterCache(paint_context);
+        layer_raster_cache_item.Draw(paint_context, &dummy_canvas, &paint);
         rasterized.set_value(true);
       });
   rasterized.get_future().wait();
@@ -2236,37 +2469,67 @@ TEST_F(ShellTest, OnServiceProtocolEstimateRasterCacheMemoryWorks) {
   DestroyShell(std::move(shell));
 }
 
-TEST_F(ShellTest, DiscardLayerTreeOnResize) {
+// ktz
+TEST_F(ShellTest, OnServiceProtocolRenderFrameWithRasterStatsWorks) {
+  auto settings = CreateSettingsForFixture();
+  std::unique_ptr<Shell> shell = CreateShell(settings);
+
+  // Create the surface needed by rasterizer
+  PlatformViewNotifyCreated(shell.get());
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("scene_with_red_box");
+
+  RunEngine(shell.get(), std::move(configuration));
+  PumpOneFrame(shell.get());
+
+  ServiceProtocol::Handler::ServiceProtocolMap empty_params;
+  rapidjson::Document document;
+  OnServiceProtocol(
+      shell.get(), ServiceProtocolEnum::kRenderFrameWithRasterStats,
+      shell->GetTaskRunners().GetRasterTaskRunner(), empty_params, &document);
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  document.Accept(writer);
+
+  // It would be better to parse out the json and check for the validity of
+  // fields. Below checks approximate what needs to be checked, this can not be
+  // an exact check since duration will not exactly match.
+  std::string expected_json =
+      "\"snapshot\":[137,80,78,71,13,10,26,10,0,"
+      "0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,1,115,"
+      "82,71,66,0,174,206,28,233,0,0,0,4,115,66,73,84,8,8,8,8,124,8,100,136,0,"
+      "0,0,13,73,68,65,84,8,153,99,248,207,192,240,31,0,5,0,1,255,171,206,54,"
+      "137,0,0,0,0,73,69,78,68,174,66,96,130]";
+  std::string actual_json = buffer.GetString();
+
+  EXPECT_THAT(actual_json, ::testing::HasSubstr(expected_json));
+  EXPECT_THAT(actual_json,
+              ::testing::HasSubstr("{\"type\":\"RenderFrameWithRasterStats\""));
+  EXPECT_THAT(actual_json, ::testing::HasSubstr("\"duration_micros\""));
+
+  PlatformViewNotifyDestroyed(shell.get());
+  DestroyShell(std::move(shell));
+}
+
+// TODO(https://github.com/flutter/flutter/issues/100273): Disabled due to
+// flakiness.
+// TODO(https://github.com/flutter/flutter/issues/100299): Fix it when
+// re-enabling.
+TEST_F(ShellTest, DISABLED_DiscardLayerTreeOnResize) {
   auto settings = CreateSettingsForFixture();
 
   SkISize wrong_size = SkISize::Make(400, 100);
   SkISize expected_size = SkISize::Make(400, 200);
 
   fml::AutoResetWaitableEvent end_frame_latch;
-  std::shared_ptr<ShellTestExternalViewEmbedder> external_view_embedder;
-  fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger_ref;
   auto end_frame_callback =
       [&](bool should_merge_thread,
           fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger) {
-        if (!raster_thread_merger_ref) {
-          raster_thread_merger_ref = raster_thread_merger;
-        }
-        if (should_merge_thread) {
-          // TODO(cyanglaz): This test used external_view_embedder so we need to
-          // merge the threads here. However, the scenario it is testing is
-          // unrelated to platform views. We should consider to update this test
-          // so it doesn't require external_view_embedder.
-          // https://github.com/flutter/flutter/issues/69895
-          raster_thread_merger->MergeWithLease(10);
-          external_view_embedder->UpdatePostPrerollResult(
-              PostPrerollResult::kSuccess);
-        }
         end_frame_latch.Signal();
       };
-
-  external_view_embedder = std::make_shared<ShellTestExternalViewEmbedder>(
-      std::move(end_frame_callback), PostPrerollResult::kResubmitFrame, true);
-
+  auto external_view_embedder = std::make_shared<ShellTestExternalViewEmbedder>(
+      std::move(end_frame_callback), PostPrerollResult::kSuccess, false);
   std::unique_ptr<Shell> shell = CreateShell(
       settings, GetTaskRunnersForFixture(), false, external_view_embedder);
 
@@ -2288,21 +2551,14 @@ TEST_F(ShellTest, DiscardLayerTreeOnResize) {
 
   PumpOneFrame(shell.get(), static_cast<double>(wrong_size.width()),
                static_cast<double>(wrong_size.height()));
-
   end_frame_latch.Wait();
-
+  // Wrong size, no frames are submitted.
   ASSERT_EQ(0, external_view_embedder->GetSubmittedFrameCount());
 
-  // Threads will be merged at the end of this frame.
   PumpOneFrame(shell.get(), static_cast<double>(expected_size.width()),
                static_cast<double>(expected_size.height()));
-
   end_frame_latch.Wait();
-  ASSERT_TRUE(raster_thread_merger_ref->IsMerged());
-
-  end_frame_latch.Wait();
-  // 2 frames are submitted because `kResubmitFrame`, but only the 2nd frame
-  // should be submitted with `external_view_embedder`, hence the below check.
+  // Expected size, 1 frame submitted.
   ASSERT_EQ(1, external_view_embedder->GetSubmittedFrameCount());
   ASSERT_EQ(expected_size, external_view_embedder->GetLastSubmittedFrameSize());
 
@@ -2310,7 +2566,11 @@ TEST_F(ShellTest, DiscardLayerTreeOnResize) {
   DestroyShell(std::move(shell));
 }
 
-TEST_F(ShellTest, DiscardResubmittedLayerTreeOnResize) {
+// TODO(https://github.com/flutter/flutter/issues/100273): Disabled due to
+// flakiness.
+// TODO(https://github.com/flutter/flutter/issues/100299): Fix it when
+// re-enabling.
+TEST_F(ShellTest, DISABLED_DiscardResubmittedLayerTreeOnResize) {
   auto settings = CreateSettingsForFixture();
 
   SkISize origin_size = SkISize::Make(400, 100);
@@ -2466,11 +2726,6 @@ TEST_F(ShellTest, IgnoresInvalidMetrics) {
 }
 
 TEST_F(ShellTest, OnServiceProtocolSetAssetBundlePathWorks) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires vm service sandboxing fix";
-#endif  // defined(WINUWP)
-
   Settings settings = CreateSettingsForFixture();
   std::unique_ptr<Shell> shell = CreateShell(settings);
   RunConfiguration configuration =
@@ -2543,11 +2798,6 @@ TEST_F(ShellTest, EngineRootIsolateLaunchesDontTakeVMDataSettings) {
 }
 
 TEST_F(ShellTest, AssetManagerSingle) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires filesystem sandboxing fix";
-#endif  // defined(WINUWP)
-
   fml::ScopedTemporaryDirectory asset_dir;
   fml::UniqueFD asset_dir_fd = fml::OpenDirectory(
       asset_dir.path().c_str(), false, fml::FilePermission::kRead);
@@ -2573,11 +2823,6 @@ TEST_F(ShellTest, AssetManagerSingle) {
 }
 
 TEST_F(ShellTest, AssetManagerMulti) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires filesystem sandboxing fix";
-#endif  // defined(WINUWP)
-
   fml::ScopedTemporaryDirectory asset_dir;
   fml::UniqueFD asset_dir_fd = fml::OpenDirectory(
       asset_dir.path().c_str(), false, fml::FilePermission::kRead);
@@ -2632,8 +2877,8 @@ TEST_F(ShellTest, AssetManagerMultiSubdir) {
 
   std::vector<std::string> filenames = {
       "bad0",
-      "notgood",  // this is to make sure the pattern (.*)good(.*) only matches
-                  // things in the subdirectory
+      "notgood",  // this is to make sure the pattern (.*)good(.*) only
+                  // matches things in the subdirectory
   };
 
   std::vector<std::string> subdir_filenames = {
@@ -2708,8 +2953,9 @@ TEST_F(ShellTest, Spawn) {
   // Fulfill native function for the second Shell's entrypoint.
   fml::CountDownLatch second_latch(2);
   AddNativeCallback(
-      // The Dart native function names aren't very consistent but this is just
-      // the native function name of the second vm entrypoint in the fixture.
+      // The Dart native function names aren't very consistent but this is
+      // just the native function name of the second vm entrypoint in the
+      // fixture.
       "NotifyNative",
       CREATE_NATIVE_ENTRY([&](auto args) { second_latch.CountDown(); }));
 
@@ -2738,27 +2984,135 @@ TEST_F(ShellTest, Spawn) {
         ASSERT_NE(nullptr, spawn.get());
         ASSERT_TRUE(ValidateShell(spawn.get()));
 
+        PostSync(spawner->GetTaskRunners().GetUITaskRunner(), [&spawn, &spawner,
+                                                               initial_route] {
+          // Check second shell ran the second entrypoint.
+          ASSERT_EQ("testCanLaunchSecondaryIsolate",
+                    spawn->GetEngine()->GetLastEntrypoint());
+          ASSERT_EQ(initial_route, spawn->GetEngine()->InitialRoute());
+
+          ASSERT_NE(spawner->GetEngine()
+                        ->GetRuntimeController()
+                        ->GetRootIsolateGroup(),
+                    0u);
+          ASSERT_EQ(spawner->GetEngine()
+                        ->GetRuntimeController()
+                        ->GetRootIsolateGroup(),
+                    spawn->GetEngine()
+                        ->GetRuntimeController()
+                        ->GetRootIsolateGroup());
+          auto spawner_snapshot_delegate = spawner->GetEngine()
+                                               ->GetRuntimeController()
+                                               ->GetSnapshotDelegate();
+          auto spawn_snapshot_delegate =
+              spawn->GetEngine()->GetRuntimeController()->GetSnapshotDelegate();
+          PostSync(spawner->GetTaskRunners().GetRasterTaskRunner(),
+                   [spawner_snapshot_delegate, spawn_snapshot_delegate] {
+                     ASSERT_NE(spawner_snapshot_delegate.get(),
+                               spawn_snapshot_delegate.get());
+                   });
+        });
+        PostSync(
+            spawner->GetTaskRunners().GetIOTaskRunner(), [&spawner, &spawn] {
+              ASSERT_EQ(spawner->GetIOManager()->GetResourceContext().get(),
+                        spawn->GetIOManager()->GetResourceContext().get());
+            });
+
+        // Before destroying the shell, wait for expectations of the spawned
+        // isolate to be met.
+        second_latch.Wait();
+
+        DestroyShell(std::move(spawn));
+      });
+
+  DestroyShell(std::move(shell));
+  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+}
+
+TEST_F(ShellTest, SpawnWithDartEntrypointArgs) {
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(ValidateShell(shell.get()));
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  ASSERT_TRUE(configuration.IsValid());
+  configuration.SetEntrypoint("canReceiveArgumentsWhenEngineRun");
+  const std::vector<std::string> entrypoint_args{"foo", "bar"};
+  configuration.SetEntrypointArgs(entrypoint_args);
+
+  auto second_configuration = RunConfiguration::InferFromSettings(settings);
+  ASSERT_TRUE(second_configuration.IsValid());
+  second_configuration.SetEntrypoint("canReceiveArgumentsWhenEngineSpawn");
+  const std::vector<std::string> second_entrypoint_args{"arg1", "arg2"};
+  second_configuration.SetEntrypointArgs(second_entrypoint_args);
+
+  const std::string initial_route("/foo");
+
+  fml::AutoResetWaitableEvent main_latch;
+  std::string last_entry_point;
+  // Fulfill native function for the first Shell's entrypoint.
+  AddNativeCallback("NotifyNativeWhenEngineRun",
+                    CREATE_NATIVE_ENTRY(([&](Dart_NativeArguments args) {
+                      ASSERT_TRUE(tonic::DartConverter<bool>::FromDart(
+                          Dart_GetNativeArgument(args, 0)));
+                      last_entry_point =
+                          shell->GetEngine()->GetLastEntrypoint();
+                      main_latch.Signal();
+                    })));
+
+  fml::AutoResetWaitableEvent second_latch;
+  // Fulfill native function for the second Shell's entrypoint.
+  AddNativeCallback("NotifyNativeWhenEngineSpawn",
+                    CREATE_NATIVE_ENTRY(([&](Dart_NativeArguments args) {
+                      ASSERT_TRUE(tonic::DartConverter<bool>::FromDart(
+                          Dart_GetNativeArgument(args, 0)));
+                      last_entry_point =
+                          shell->GetEngine()->GetLastEntrypoint();
+                      second_latch.Signal();
+                    })));
+
+  RunEngine(shell.get(), std::move(configuration));
+  main_latch.Wait();
+  ASSERT_TRUE(DartVMRef::IsInstanceRunning());
+  // Check first Shell ran the first entrypoint.
+  ASSERT_EQ("canReceiveArgumentsWhenEngineRun", last_entry_point);
+
+  PostSync(
+      shell->GetTaskRunners().GetPlatformTaskRunner(),
+      [this, &spawner = shell, &second_configuration, &second_latch,
+       initial_route]() {
+        MockPlatformViewDelegate platform_view_delegate;
+        auto spawn = spawner->Spawn(
+            std::move(second_configuration), initial_route,
+            [&platform_view_delegate](Shell& shell) {
+              auto result = std::make_unique<MockPlatformView>(
+                  platform_view_delegate, shell.GetTaskRunners());
+              ON_CALL(*result, CreateRenderingSurface())
+                  .WillByDefault(::testing::Invoke(
+                      [] { return std::make_unique<MockSurface>(); }));
+              return result;
+            },
+            [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+        ASSERT_NE(nullptr, spawn.get());
+        ASSERT_TRUE(ValidateShell(spawn.get()));
+
         PostSync(spawner->GetTaskRunners().GetUITaskRunner(),
                  [&spawn, &spawner, initial_route] {
                    // Check second shell ran the second entrypoint.
-                   ASSERT_EQ("testCanLaunchSecondaryIsolate",
+                   ASSERT_EQ("canReceiveArgumentsWhenEngineSpawn",
                              spawn->GetEngine()->GetLastEntrypoint());
                    ASSERT_EQ(initial_route, spawn->GetEngine()->InitialRoute());
 
-                   // TODO(74520): Remove conditional once isolate groups are
-                   // supported by JIT.
-                   if (DartVM::IsRunningPrecompiledCode()) {
-                     ASSERT_NE(spawner->GetEngine()
-                                   ->GetRuntimeController()
-                                   ->GetRootIsolateGroup(),
-                               0u);
-                     ASSERT_EQ(spawner->GetEngine()
-                                   ->GetRuntimeController()
-                                   ->GetRootIsolateGroup(),
-                               spawn->GetEngine()
-                                   ->GetRuntimeController()
-                                   ->GetRootIsolateGroup());
-                   }
+                   ASSERT_NE(spawner->GetEngine()
+                                 ->GetRuntimeController()
+                                 ->GetRootIsolateGroup(),
+                             0u);
+                   ASSERT_EQ(spawner->GetEngine()
+                                 ->GetRuntimeController()
+                                 ->GetRootIsolateGroup(),
+                             spawn->GetEngine()
+                                 ->GetRuntimeController()
+                                 ->GetRootIsolateGroup());
                  });
 
         PostSync(
@@ -2776,6 +3130,155 @@ TEST_F(ShellTest, Spawn) {
 
   DestroyShell(std::move(shell));
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+}
+
+TEST_F(ShellTest, IOManagerIsSharedBetweenParentAndSpawnedShell) {
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(ValidateShell(shell.get()));
+
+  PostSync(shell->GetTaskRunners().GetPlatformTaskRunner(), [this,
+                                                             &spawner = shell,
+                                                             &settings] {
+    auto second_configuration = RunConfiguration::InferFromSettings(settings);
+    ASSERT_TRUE(second_configuration.IsValid());
+    second_configuration.SetEntrypoint("emptyMain");
+    const std::string initial_route("/foo");
+    MockPlatformViewDelegate platform_view_delegate;
+    auto spawn = spawner->Spawn(
+        std::move(second_configuration), initial_route,
+        [&platform_view_delegate](Shell& shell) {
+          auto result = std::make_unique<MockPlatformView>(
+              platform_view_delegate, shell.GetTaskRunners());
+          ON_CALL(*result, CreateRenderingSurface())
+              .WillByDefault(::testing::Invoke(
+                  [] { return std::make_unique<MockSurface>(); }));
+          return result;
+        },
+        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+    ASSERT_TRUE(ValidateShell(spawn.get()));
+
+    PostSync(spawner->GetTaskRunners().GetIOTaskRunner(), [&spawner, &spawn] {
+      ASSERT_NE(spawner->GetIOManager().get(), nullptr);
+      ASSERT_EQ(spawner->GetIOManager().get(), spawn->GetIOManager().get());
+    });
+
+    // Destroy the child shell.
+    DestroyShell(std::move(spawn));
+  });
+  // Destroy the parent shell.
+  DestroyShell(std::move(shell));
+}
+
+TEST_F(ShellTest, IOManagerInSpawnedShellIsNotNullAfterParentShellDestroyed) {
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(ValidateShell(shell.get()));
+
+  PostSync(shell->GetTaskRunners().GetUITaskRunner(), [&shell] {
+    // We must get engine on UI thread.
+    auto runtime_controller = shell->GetEngine()->GetRuntimeController();
+    PostSync(shell->GetTaskRunners().GetIOTaskRunner(),
+             [&shell, &runtime_controller] {
+               // We must get io_manager on IO thread.
+               auto io_manager = runtime_controller->GetIOManager();
+               // Check io_manager existence.
+               ASSERT_NE(io_manager.get(), nullptr);
+               ASSERT_NE(io_manager->GetSkiaUnrefQueue().get(), nullptr);
+               // Get io_manager directly from shell and check its existence.
+               ASSERT_NE(shell->GetIOManager().get(), nullptr);
+             });
+  });
+
+  std::unique_ptr<Shell> spawn;
+
+  PostSync(shell->GetTaskRunners().GetPlatformTaskRunner(), [&shell, &settings,
+                                                             &spawn] {
+    auto second_configuration = RunConfiguration::InferFromSettings(settings);
+    ASSERT_TRUE(second_configuration.IsValid());
+    second_configuration.SetEntrypoint("emptyMain");
+    const std::string initial_route("/foo");
+    MockPlatformViewDelegate platform_view_delegate;
+    auto child = shell->Spawn(
+        std::move(second_configuration), initial_route,
+        [&platform_view_delegate](Shell& shell) {
+          auto result = std::make_unique<MockPlatformView>(
+              platform_view_delegate, shell.GetTaskRunners());
+          ON_CALL(*result, CreateRenderingSurface())
+              .WillByDefault(::testing::Invoke(
+                  [] { return std::make_unique<MockSurface>(); }));
+          return result;
+        },
+        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+    spawn = std::move(child);
+  });
+  // Destroy the parent shell.
+  DestroyShell(std::move(shell));
+
+  PostSync(spawn->GetTaskRunners().GetUITaskRunner(), [&spawn] {
+    // We must get engine on UI thread.
+    auto runtime_controller = spawn->GetEngine()->GetRuntimeController();
+    PostSync(spawn->GetTaskRunners().GetIOTaskRunner(),
+             [&spawn, &runtime_controller] {
+               // We must get io_manager on IO thread.
+               auto io_manager = runtime_controller->GetIOManager();
+               // Check io_manager existence here.
+               ASSERT_NE(io_manager.get(), nullptr);
+               ASSERT_NE(io_manager->GetSkiaUnrefQueue().get(), nullptr);
+               // Get io_manager directly from shell and check its existence.
+               ASSERT_NE(spawn->GetIOManager().get(), nullptr);
+             });
+  });
+  // Destroy the child shell.
+  DestroyShell(std::move(spawn));
+}
+
+TEST_F(ShellTest, ImageGeneratorRegistryNotNullAfterParentShellDestroyed) {
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(ValidateShell(shell.get()));
+
+  std::unique_ptr<Shell> spawn;
+
+  PostSync(shell->GetTaskRunners().GetPlatformTaskRunner(), [&shell, &settings,
+                                                             &spawn] {
+    auto second_configuration = RunConfiguration::InferFromSettings(settings);
+    ASSERT_TRUE(second_configuration.IsValid());
+    second_configuration.SetEntrypoint("emptyMain");
+    const std::string initial_route("/foo");
+    MockPlatformViewDelegate platform_view_delegate;
+    auto child = shell->Spawn(
+        std::move(second_configuration), initial_route,
+        [&platform_view_delegate](Shell& shell) {
+          auto result = std::make_unique<MockPlatformView>(
+              platform_view_delegate, shell.GetTaskRunners());
+          ON_CALL(*result, CreateRenderingSurface())
+              .WillByDefault(::testing::Invoke(
+                  [] { return std::make_unique<MockSurface>(); }));
+          return result;
+        },
+        [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+    spawn = std::move(child);
+  });
+
+  PostSync(spawn->GetTaskRunners().GetUITaskRunner(), [&spawn] {
+    std::shared_ptr<const DartIsolate> isolate =
+        spawn->GetEngine()->GetRuntimeController()->GetRootIsolate().lock();
+    ASSERT_TRUE(isolate);
+    ASSERT_TRUE(isolate->GetImageGeneratorRegistry());
+  });
+
+  // Destroy the parent shell.
+  DestroyShell(std::move(shell));
+
+  PostSync(spawn->GetTaskRunners().GetUITaskRunner(), [&spawn] {
+    std::shared_ptr<const DartIsolate> isolate =
+        spawn->GetEngine()->GetRuntimeController()->GetRootIsolate().lock();
+    ASSERT_TRUE(isolate);
+    ASSERT_TRUE(isolate->GetImageGeneratorRegistry());
+  });
+  // Destroy the child shell.
+  DestroyShell(std::move(spawn));
 }
 
 TEST_F(ShellTest, UpdateAssetResolverByTypeReplaces) {
@@ -2860,8 +3363,9 @@ TEST_F(ShellTest, UpdateAssetResolverByTypeAppends) {
 TEST_F(ShellTest, UpdateAssetResolverByTypeNull) {
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
   Settings settings = CreateSettingsForFixture();
-  ThreadHost thread_host("io.flutter.test." + GetCurrentTestName() + ".",
-                         ThreadHost::Type::Platform);
+  ThreadHost thread_host(ThreadHost::ThreadHostConfig(
+      "io.flutter.test." + GetCurrentTestName() + ".",
+      ThreadHost::Type::Platform));
   auto task_runner = thread_host.platform_thread->GetTaskRunner();
   TaskRunners task_runners("test", task_runner, task_runner, task_runner,
                            task_runner);
@@ -2897,8 +3401,9 @@ TEST_F(ShellTest, UpdateAssetResolverByTypeNull) {
 TEST_F(ShellTest, UpdateAssetResolverByTypeDoesNotReplaceMismatchType) {
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
   Settings settings = CreateSettingsForFixture();
-  ThreadHost thread_host("io.flutter.test." + GetCurrentTestName() + ".",
-                         ThreadHost::Type::Platform);
+  ThreadHost thread_host(ThreadHost::ThreadHostConfig(
+      "io.flutter.test." + GetCurrentTestName() + ".",
+      ThreadHost::Type::Platform));
   auto task_runner = thread_host.platform_thread->GetTaskRunner();
   TaskRunners task_runners("test", task_runner, task_runner, task_runner,
                            task_runner);
@@ -2954,8 +3459,8 @@ TEST_F(ShellTest, CanCreateShellsWithGLBackend) {
       );
   ASSERT_NE(shell, nullptr);
   ASSERT_TRUE(shell->IsSetup());
-  PlatformViewNotifyCreated(shell.get());
   auto configuration = RunConfiguration::InferFromSettings(settings);
+  PlatformViewNotifyCreated(shell.get());
   configuration.SetEntrypoint("emptyMain");
   RunEngine(shell.get(), std::move(configuration));
   PumpOneFrame(shell.get());
@@ -2978,8 +3483,8 @@ TEST_F(ShellTest, CanCreateShellsWithVulkanBackend) {
       );
   ASSERT_NE(shell, nullptr);
   ASSERT_TRUE(shell->IsSetup());
-  PlatformViewNotifyCreated(shell.get());
   auto configuration = RunConfiguration::InferFromSettings(settings);
+  PlatformViewNotifyCreated(shell.get());
   configuration.SetEntrypoint("emptyMain");
   RunEngine(shell.get(), std::move(configuration));
   PumpOneFrame(shell.get());
@@ -3002,8 +3507,8 @@ TEST_F(ShellTest, CanCreateShellsWithMetalBackend) {
       );
   ASSERT_NE(shell, nullptr);
   ASSERT_TRUE(shell->IsSetup());
-  PlatformViewNotifyCreated(shell.get());
   auto configuration = RunConfiguration::InferFromSettings(settings);
+  PlatformViewNotifyCreated(shell.get());
   configuration.SetEntrypoint("emptyMain");
   RunEngine(shell.get(), std::move(configuration));
   PumpOneFrame(shell.get());
@@ -3047,8 +3552,7 @@ TEST_F(ShellTest, UserTagSetOnStartup) {
 TEST_F(ShellTest, PrefetchDefaultFontManager) {
   auto settings = CreateSettingsForFixture();
   settings.prefetched_default_font_manager = true;
-
-  auto shell = CreateShell(std::move(settings));
+  std::unique_ptr<Shell> shell;
 
   auto get_font_manager_count = [&] {
     fml::AutoResetWaitableEvent latch;
@@ -3063,8 +3567,17 @@ TEST_F(ShellTest, PrefetchDefaultFontManager) {
     latch.Wait();
     return font_manager_count;
   };
+  size_t initial_font_manager_count = 0;
+  settings.root_isolate_create_callback = [&](const auto& isolate) {
+    ASSERT_GT(initial_font_manager_count, 0ul);
+    // Should not have fetched the default font manager yet, since the root
+    // isolate was only just created.
+    ASSERT_EQ(get_font_manager_count(), initial_font_manager_count);
+  };
 
-  size_t initial_font_manager_count = get_font_manager_count();
+  shell = CreateShell(std::move(settings));
+
+  initial_font_manager_count = get_font_manager_count();
 
   auto configuration = RunConfiguration::InferFromSettings(settings);
   configuration.SetEntrypoint("emptyMain");
@@ -3077,5 +3590,214 @@ TEST_F(ShellTest, PrefetchDefaultFontManager) {
   DestroyShell(std::move(shell));
 }
 
+TEST_F(ShellTest, OnPlatformViewCreatedWhenUIThreadIsBusy) {
+  // This test will deadlock if the threading logic in
+  // Shell::OnCreatePlatformView is wrong.
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(std::move(settings));
+
+  fml::AutoResetWaitableEvent latch;
+  fml::TaskRunner::RunNowOrPostTask(shell->GetTaskRunners().GetUITaskRunner(),
+                                    [&latch]() { latch.Wait(); });
+
+  ShellTest::PlatformViewNotifyCreated(shell.get());
+  latch.Signal();
+
+  DestroyShell(std::move(shell));
+}
+
+TEST_F(ShellTest, UIWorkAfterOnPlatformViewDestroyed) {
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(std::move(settings));
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("drawFrames");
+
+  fml::AutoResetWaitableEvent latch;
+  fml::AutoResetWaitableEvent notify_native_latch;
+  AddNativeCallback("NotifyNative", CREATE_NATIVE_ENTRY([&](auto args) {
+                      notify_native_latch.Signal();
+                      latch.Wait();
+                    }));
+
+  RunEngine(shell.get(), std::move(configuration));
+  // Wait to make sure we get called back from Dart and thus have latched
+  // the UI thread before we create/destroy the platform view.
+  notify_native_latch.Wait();
+
+  ShellTest::PlatformViewNotifyCreated(shell.get());
+
+  fml::AutoResetWaitableEvent destroy_latch;
+  fml::TaskRunner::RunNowOrPostTask(
+      shell->GetTaskRunners().GetPlatformTaskRunner(),
+      [&shell, &destroy_latch]() {
+        shell->GetPlatformView()->NotifyDestroyed();
+        destroy_latch.Signal();
+      });
+
+  destroy_latch.Wait();
+
+  // Unlatch the UI thread and let it send us a scene to render.
+  latch.Signal();
+
+  // Flush the UI task runner to make sure we process the render/scheduleFrame
+  // request.
+  fml::AutoResetWaitableEvent ui_flush_latch;
+  fml::TaskRunner::RunNowOrPostTask(
+      shell->GetTaskRunners().GetUITaskRunner(),
+      [&ui_flush_latch]() { ui_flush_latch.Signal(); });
+  ui_flush_latch.Wait();
+  DestroyShell(std::move(shell));
+}
+
+TEST_F(ShellTest, UsesPlatformMessageHandler) {
+  TaskRunners task_runners = GetTaskRunnersForFixture();
+  auto settings = CreateSettingsForFixture();
+  MockPlatformViewDelegate platform_view_delegate;
+  auto platform_message_handler =
+      std::make_shared<MockPlatformMessageHandler>();
+  int message_id = 1;
+  EXPECT_CALL(*platform_message_handler, HandlePlatformMessage(_));
+  EXPECT_CALL(*platform_message_handler,
+              InvokePlatformMessageEmptyResponseCallback(message_id));
+  Shell::CreateCallback<PlatformView> platform_view_create_callback =
+      [&platform_view_delegate, task_runners,
+       platform_message_handler](flutter::Shell& shell) {
+        auto result = std::make_unique<MockPlatformView>(platform_view_delegate,
+                                                         task_runners);
+        EXPECT_CALL(*result, GetPlatformMessageHandler())
+            .WillOnce(Return(platform_message_handler));
+        return result;
+      };
+  auto shell = CreateShell(
+      /*settings=*/std::move(settings),
+      /*task_runners=*/task_runners,
+      /*simulate_vsync=*/false,
+      /*shell_test_external_view_embedder=*/nullptr,
+      /*is_gpu_disabled=*/false,
+      /*rendering_backend=*/
+      ShellTestPlatformView::BackendType::kDefaultBackend,
+      /*platform_view_create_callback=*/platform_view_create_callback);
+
+  EXPECT_EQ(platform_message_handler, shell->GetPlatformMessageHandler());
+  PostSync(task_runners.GetUITaskRunner(), [&shell]() {
+    size_t data_size = 4;
+    fml::MallocMapping bytes =
+        fml::MallocMapping(static_cast<uint8_t*>(malloc(data_size)), data_size);
+    fml::RefPtr<MockPlatformMessageResponse> response =
+        MockPlatformMessageResponse::Create();
+    auto message = std::make_unique<PlatformMessage>(
+        /*channel=*/"foo", /*data=*/std::move(bytes), /*response=*/response);
+    (static_cast<Engine::Delegate*>(shell.get()))
+        ->OnEngineHandlePlatformMessage(std::move(message));
+  });
+  shell->GetPlatformMessageHandler()
+      ->InvokePlatformMessageEmptyResponseCallback(message_id);
+  DestroyShell(std::move(shell));
+}
+
+TEST_F(ShellTest, SpawnWorksWithOnError) {
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(ValidateShell(shell.get()));
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  ASSERT_TRUE(configuration.IsValid());
+  configuration.SetEntrypoint("onErrorA");
+
+  auto second_configuration = RunConfiguration::InferFromSettings(settings);
+  ASSERT_TRUE(second_configuration.IsValid());
+  second_configuration.SetEntrypoint("onErrorB");
+
+  fml::CountDownLatch latch(2);
+
+  AddNativeCallback(
+      "NotifyErrorA", CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) {
+        auto string_handle = Dart_GetNativeArgument(args, 0);
+        const char* c_str;
+        Dart_StringToCString(string_handle, &c_str);
+        EXPECT_STREQ(c_str, "Exception: I should be coming from A");
+        latch.CountDown();
+      }));
+
+  AddNativeCallback(
+      "NotifyErrorB", CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) {
+        auto string_handle = Dart_GetNativeArgument(args, 0);
+        const char* c_str;
+        Dart_StringToCString(string_handle, &c_str);
+        EXPECT_STREQ(c_str, "Exception: I should be coming from B");
+        latch.CountDown();
+      }));
+
+  RunEngine(shell.get(), std::move(configuration));
+
+  ASSERT_TRUE(DartVMRef::IsInstanceRunning());
+
+  PostSync(
+      shell->GetTaskRunners().GetPlatformTaskRunner(),
+      [this, &spawner = shell, &second_configuration, &latch]() {
+        ::testing::NiceMock<MockPlatformViewDelegate> platform_view_delegate;
+        auto spawn = spawner->Spawn(
+            std::move(second_configuration), "",
+            [&platform_view_delegate](Shell& shell) {
+              auto result =
+                  std::make_unique<::testing::NiceMock<MockPlatformView>>(
+                      platform_view_delegate, shell.GetTaskRunners());
+              ON_CALL(*result, CreateRenderingSurface())
+                  .WillByDefault(::testing::Invoke([] {
+                    return std::make_unique<::testing::NiceMock<MockSurface>>();
+                  }));
+              return result;
+            },
+            [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+        ASSERT_NE(nullptr, spawn.get());
+        ASSERT_TRUE(ValidateShell(spawn.get()));
+
+        // Before destroying the shell, wait for expectations of the spawned
+        // isolate to be met.
+        latch.Wait();
+
+        DestroyShell(std::move(spawn));
+      });
+
+  DestroyShell(std::move(shell));
+  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+}
+
+TEST_F(ShellTest, PictureToImageSync) {
+#if !SHELL_ENABLE_GL
+  // GL emulation does not exist on Fuchsia.
+  GTEST_SKIP();
+#endif  // !SHELL_ENABLE_GL
+  auto settings = CreateSettingsForFixture();
+  std::unique_ptr<Shell> shell =
+      CreateShell(settings,                                       //
+                  GetTaskRunnersForFixture(),                     //
+                  false,                                          //
+                  nullptr,                                        //
+                  false,                                          //
+                  ShellTestPlatformView::BackendType::kGLBackend  //
+      );
+
+  fml::AutoResetWaitableEvent latch;
+  AddNativeCallback("NotifyNative", CREATE_NATIVE_ENTRY([&latch](auto args) {
+                      latch.Signal();
+                    }));
+
+  ASSERT_NE(shell, nullptr);
+  ASSERT_TRUE(shell->IsSetup());
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  PlatformViewNotifyCreated(shell.get());
+  configuration.SetEntrypoint("toImageSync");
+  RunEngine(shell.get(), std::move(configuration));
+  PumpOneFrame(shell.get());
+
+  latch.Wait();
+
+  PlatformViewNotifyDestroyed(shell.get());
+  DestroyShell(std::move(shell));
+}
+
 }  // namespace testing
 }  // namespace flutter
+
+// NOLINTEND(clang-analyzer-core.StackAddressEscape)

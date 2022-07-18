@@ -19,6 +19,7 @@ static constexpr char kKeyCodeKey[] = "keyCode";
 static constexpr char kScanCodeKey[] = "scanCode";
 static constexpr char kModifiersKey[] = "modifiers";
 static constexpr char kToolkitKey[] = "toolkit";
+static constexpr char kSpecifiedLogicalKey[] = "specifiedLogicalKey";
 static constexpr char kUnicodeScalarValuesKey[] = "unicodeScalarValues";
 
 static constexpr char kGtkToolkit[] = "gtk";
@@ -115,6 +116,7 @@ G_DEFINE_TYPE_WITH_CODE(
 static void fl_key_channel_responder_handle_event(
     FlKeyResponder* responder,
     FlKeyEvent* event,
+    uint64_t specified_logical_key,
     FlKeyResponderAsyncCallback callback,
     gpointer user_data);
 
@@ -132,7 +134,7 @@ static void handle_response(GObject* object,
                             gpointer user_data) {
   g_autoptr(FlKeyChannelUserData) data = FL_KEY_CHANNEL_USER_DATA(user_data);
 
-  // Will also return if the weak pointer has been destroyed.
+  // This is true if the weak pointer has been destroyed.
   if (data->responder == nullptr) {
     return;
   }
@@ -146,12 +148,14 @@ static void handle_response(GObject* object,
   if (self->mock != nullptr && self->mock->value_converter != nullptr) {
     message = self->mock->value_converter(message);
   }
+  bool handled = false;
   if (error != nullptr) {
     g_warning("Unable to retrieve framework response: %s", error->message);
-    return;
+  } else {
+    g_autoptr(FlValue) handled_value =
+        fl_value_lookup_string(message, "handled");
+    handled = fl_value_get_bool(handled_value);
   }
-  g_autoptr(FlValue) handled_value = fl_value_lookup_string(message, "handled");
-  bool handled = fl_value_get_bool(handled_value);
 
   data->callback(handled, data->user_data);
 }
@@ -201,6 +205,7 @@ FlKeyChannelResponder* fl_key_channel_responder_new(
 static void fl_key_channel_responder_handle_event(
     FlKeyResponder* responder,
     FlKeyEvent* event,
+    uint64_t specified_logical_key,
     FlKeyResponderAsyncCallback callback,
     gpointer user_data) {
   FlKeyChannelResponder* self = FL_KEY_CHANNEL_RESPONDER(responder);
@@ -269,6 +274,11 @@ static void fl_key_channel_responder_handle_event(
   if (unicode_scarlar_values != 0) {
     fl_value_set_string_take(message, kUnicodeScalarValuesKey,
                              fl_value_new_int(unicode_scarlar_values));
+  }
+
+  if (specified_logical_key != 0) {
+    fl_value_set_string_take(message, kSpecifiedLogicalKey,
+                             fl_value_new_int(specified_logical_key));
   }
 
   FlKeyChannelUserData* data =

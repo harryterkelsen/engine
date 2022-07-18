@@ -25,7 +25,6 @@ import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.embedding.engine.renderer.RenderSurface;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
 import io.flutter.embedding.engine.systemchannels.DeferredComponentChannel;
-import io.flutter.embedding.engine.systemchannels.KeyEventChannel;
 import io.flutter.embedding.engine.systemchannels.LifecycleChannel;
 import io.flutter.embedding.engine.systemchannels.LocalizationChannel;
 import io.flutter.embedding.engine.systemchannels.MouseCursorChannel;
@@ -33,11 +32,13 @@ import io.flutter.embedding.engine.systemchannels.NavigationChannel;
 import io.flutter.embedding.engine.systemchannels.PlatformChannel;
 import io.flutter.embedding.engine.systemchannels.RestorationChannel;
 import io.flutter.embedding.engine.systemchannels.SettingsChannel;
+import io.flutter.embedding.engine.systemchannels.SpellCheckChannel;
 import io.flutter.embedding.engine.systemchannels.SystemChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.plugin.localization.LocalizationPlugin;
 import io.flutter.plugin.platform.PlatformViewsController;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -86,7 +87,6 @@ public class FlutterEngine {
   // System channels.
   @NonNull private final AccessibilityChannel accessibilityChannel;
   @NonNull private final DeferredComponentChannel deferredComponentChannel;
-  @NonNull private final KeyEventChannel keyEventChannel;
   @NonNull private final LifecycleChannel lifecycleChannel;
   @NonNull private final LocalizationChannel localizationChannel;
   @NonNull private final MouseCursorChannel mouseCursorChannel;
@@ -94,6 +94,7 @@ public class FlutterEngine {
   @NonNull private final RestorationChannel restorationChannel;
   @NonNull private final PlatformChannel platformChannel;
   @NonNull private final SettingsChannel settingsChannel;
+  @NonNull private final SpellCheckChannel spellCheckChannel;
   @NonNull private final SystemChannel systemChannel;
   @NonNull private final TextInputChannel textInputChannel;
 
@@ -133,7 +134,7 @@ public class FlutterEngine {
    *
    * <p>A new {@code FlutterEngine} will not display any UI until a {@link RenderSurface} is
    * registered. See {@link #getRenderer()} and {@link
-   * FlutterRenderer#startRenderingToSurface(Surface)}.
+   * FlutterRenderer#startRenderingToSurface(Surface, boolean)}.
    *
    * <p>A new {@code FlutterEngine} automatically attaches all plugins. See {@link #getPlugins()}.
    *
@@ -300,7 +301,6 @@ public class FlutterEngine {
 
     accessibilityChannel = new AccessibilityChannel(dartExecutor, flutterJNI);
     deferredComponentChannel = new DeferredComponentChannel(dartExecutor);
-    keyEventChannel = new KeyEventChannel(dartExecutor);
     lifecycleChannel = new LifecycleChannel(dartExecutor);
     localizationChannel = new LocalizationChannel(dartExecutor);
     mouseCursorChannel = new MouseCursorChannel(dartExecutor);
@@ -308,6 +308,7 @@ public class FlutterEngine {
     platformChannel = new PlatformChannel(dartExecutor);
     restorationChannel = new RestorationChannel(dartExecutor, waitForRestorationData);
     settingsChannel = new SettingsChannel(dartExecutor);
+    spellCheckChannel = new SpellCheckChannel(dartExecutor);
     systemChannel = new SystemChannel(dartExecutor);
     textInputChannel = new TextInputChannel(dartExecutor);
 
@@ -348,6 +349,8 @@ public class FlutterEngine {
     this.pluginRegistry =
         new FlutterEngineConnectionRegistry(context.getApplicationContext(), this, flutterLoader);
 
+    localizationPlugin.sendLocalesToFlutter(context.getResources().getConfiguration());
+
     // Only automatically register plugins if both constructor parameter and
     // loaded AndroidManifest config turn this feature on.
     if (automaticallyRegisterPlugins && flutterLoader.automaticallyRegisterPlugins()) {
@@ -380,13 +383,17 @@ public class FlutterEngine {
    * @param dartEntrypoint specifies the {@link DartEntrypoint} the new engine should run. It
    *     doesn't need to be the same entrypoint as the current engine but must be built in the same
    *     AOT or snapshot.
+   * @param initialRoute The name of the initial Flutter `Navigator` `Route` to load. If this is
+   *     null, it will default to the "/" route.
+   * @param dartEntrypointArgs Arguments passed as a list of string to Dart's entrypoint function.
    * @return a new {@link io.flutter.embedding.engine.FlutterEngine}.
    */
   @NonNull
   /*package*/ FlutterEngine spawn(
       @NonNull Context context,
       @NonNull DartEntrypoint dartEntrypoint,
-      @Nullable String initialRoute) {
+      @Nullable String initialRoute,
+      @Nullable List<String> dartEntrypointArgs) {
     if (!isAttachedToJni()) {
       throw new IllegalStateException(
           "Spawn can only be called on a fully constructed FlutterEngine");
@@ -396,7 +403,8 @@ public class FlutterEngine {
         flutterJNI.spawn(
             dartEntrypoint.dartEntrypointFunctionName,
             dartEntrypoint.dartEntrypointLibrary,
-            initialRoute);
+            initialRoute,
+            dartEntrypointArgs);
     return new FlutterEngine(
         context, // Context.
         null, // FlutterLoader. A null value passed here causes the constructor to get it from the
@@ -475,12 +483,6 @@ public class FlutterEngine {
     return accessibilityChannel;
   }
 
-  /** System channel that sends key events from Android to Flutter. */
-  @NonNull
-  public KeyEventChannel getKeyEventChannel() {
-    return keyEventChannel;
-  }
-
   /** System channel that sends Android lifecycle events to Flutter. */
   @NonNull
   public LifecycleChannel getLifecycleChannel() {
@@ -551,6 +553,12 @@ public class FlutterEngine {
   @NonNull
   public TextInputChannel getTextInputChannel() {
     return textInputChannel;
+  }
+
+  /** System channel that sends and receives spell check requests and results. */
+  @NonNull
+  public SpellCheckChannel getSpellCheckChannel() {
+    return spellCheckChannel;
   }
 
   /**

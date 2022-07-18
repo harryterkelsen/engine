@@ -20,7 +20,7 @@ constexpr scenic::Color kChildBackgroundColor = {0xFF, 0x00, 0xFF,
                                                  0xFF};                // Pink
 constexpr scenic::Color kChildTappedColor = {0xFF, 0xFF, 0x00, 0xFF};  // Yellow
 
-// TODO(fxb/64201): The new flutter renderer draws overlays as a single, large
+// TODO(fxb/94000): The new flutter renderer draws overlays as a single, large
 // layer.  Some parts of this layer are fully transparent, so we want the
 // compositor to treat the layer as transparent and blend it with the contents
 // below.
@@ -62,8 +62,6 @@ const std::vector<std::pair<const char*, const char*>> GetInjectedServices() {
   std::vector<std::pair<const char*, const char*>> injected_services = {{
       {"fuchsia.accessibility.semantics.SemanticsManager",
        "fuchsia-pkg://fuchsia.com/a11y-manager#meta/a11y-manager.cmx"},
-      {"fuchsia.deprecatedtimezone.Timezone",
-       "fuchsia-pkg://fuchsia.com/timezone#meta/timezone.cmx"},
       {"fuchsia.fonts.Provider",
        "fuchsia-pkg://fuchsia.com/fonts#meta/fonts.cmx"},
       {"fuchsia.hardware.display.Provider",
@@ -73,15 +71,15 @@ const std::vector<std::pair<const char*, const char*>> GetInjectedServices() {
        "fuchsia-pkg://fuchsia.com/intl_property_manager#meta/"
        "intl_property_manager.cmx"},
       {"fuchsia.netstack.Netstack",
-       "fuchsia-pkg://fuchsia.com/netstack#meta/netstack.cmx"},
+       "fuchsia-pkg://fuchsia.com/network-legacy-deprecated#meta/netstack.cmx"},
       {"fuchsia.posix.socket.Provider",
-       "fuchsia-pkg://fuchsia.com/netstack#meta/netstack.cmx"},
+       "fuchsia-pkg://fuchsia.com/network-legacy-deprecated#meta/netstack.cmx"},
       {"fuchsia.tracing.provider.Registry",
        "fuchsia-pkg://fuchsia.com/trace_manager#meta/trace_manager.cmx"},
       {"fuchsia.ui.input.ImeService",
-       "fuchsia-pkg://fuchsia.com/ime_service#meta/ime_service.cmx"},
+       "fuchsia-pkg://fuchsia.com/text_manager#meta/text_manager.cmx"},
       {"fuchsia.ui.input.ImeVisibilityService",
-       "fuchsia-pkg://fuchsia.com/ime_service#meta/ime_service.cmx"},
+       "fuchsia-pkg://fuchsia.com/text_manager#meta/text_manager.cmx"},
       {"fuchsia.ui.scenic.Scenic",
        "fuchsia-pkg://fuchsia.com/scenic#meta/scenic.cmx"},
       {"fuchsia.ui.pointerinjector.Registry",

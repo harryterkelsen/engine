@@ -89,8 +89,7 @@ class AccessibilityBridgeTest : public testing::Test {
  protected:
   void SetUp() override {
     // Connect to SemanticsManager service.
-    fidl::InterfaceHandle<fuchsia::accessibility::semantics::SemanticsManager>
-        semantics_manager;
+    fuchsia::accessibility::semantics::SemanticsManagerHandle semantics_manager;
     zx_status_t semantics_status =
         services_provider_.service_directory()
             ->Connect<fuchsia::accessibility::semantics::SemanticsManager>(
@@ -803,12 +802,18 @@ TEST_F(AccessibilityBridgeTest, BatchesLargeMessages) {
   }
 
   update.insert(std::make_pair(0, std::move(node0)));
+
+  // Make the semantics manager hold answering to this commit to test the flow
+  // control. This means the second update will not be pushed until the first
+  // one has processed.
+  semantics_manager_.SetShouldHoldCommitResponse(true);
   accessibility_bridge_->AddSemanticsNodeUpdate(update, 1.f);
   RunLoopUntilIdle();
 
   EXPECT_EQ(0, semantics_manager_.DeleteCount());
+
   EXPECT_TRUE(6 <= semantics_manager_.UpdateCount() &&
-              semantics_manager_.UpdateCount() <= 10);
+              semantics_manager_.UpdateCount() <= 12);
   EXPECT_EQ(1, semantics_manager_.CommitCount());
   EXPECT_FALSE(semantics_manager_.DeleteOverflowed());
   EXPECT_FALSE(semantics_manager_.UpdateOverflowed());
@@ -822,6 +827,12 @@ TEST_F(AccessibilityBridgeTest, BatchesLargeMessages) {
           {0, node0},
       },
       1.f);
+  RunLoopUntilIdle();
+
+  // Should still be 0, because the commit was not answered yet.
+  EXPECT_EQ(0, semantics_manager_.DeleteCount());
+
+  semantics_manager_.InvokeCommitCallback();
   RunLoopUntilIdle();
 
   EXPECT_EQ(1, semantics_manager_.DeleteCount());

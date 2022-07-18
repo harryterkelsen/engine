@@ -8,7 +8,7 @@
 
 #include <sstream>
 
-#include "flutter/shell/platform/windows/string_conversion.h"
+#include "flutter/fml/platform/win/wstring_conversion.h"
 
 namespace flutter {
 
@@ -50,7 +50,7 @@ std::vector<std::wstring> GetPreferredLanguages() {
     }
     // Read the next null-terminated language.
     std::wstring language(buffer.c_str() + start);
-    if (language.size() == 0) {
+    if (language.empty()) {
       break;
     }
     languages.push_back(language);
@@ -65,7 +65,7 @@ LanguageInfo ParseLanguageName(std::wstring language_name) {
 
   // Split by '-', discarding any suplemental language info (-x-foo).
   std::vector<std::string> components;
-  std::istringstream stream(Utf8FromUtf16(language_name));
+  std::istringstream stream(fml::WideStringToUtf8(language_name));
   std::string component;
   while (getline(stream, component, '-')) {
     if (component == "x") {
@@ -104,24 +104,6 @@ std::wstring GetUserTimeFormat() {
 
 bool Prefer24HourTime(std::wstring time_format) {
   return time_format.find(L"H") != std::wstring::npos;
-}
-
-std::wstring GetPreferredBrightness() {
-  DWORD use_light_theme;
-  DWORD use_light_theme_size = sizeof(use_light_theme);
-  LONG result = RegGetValue(
-      HKEY_CURRENT_USER,
-      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-      L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &use_light_theme,
-      &use_light_theme_size);
-
-  if (result == 0) {
-    return use_light_theme ? kPlatformBrightnessLight : kPlatformBrightnessDark;
-  } else {
-    // The current OS does not support dark mode. (Older Windows 10 or before
-    // Windows 10)
-    return kPlatformBrightnessLight;
-  }
 }
 
 }  // namespace flutter

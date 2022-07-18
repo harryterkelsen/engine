@@ -5,7 +5,7 @@
 # found in the LICENSE file.
 
 """
-This script is based on chromium/chromium/master/tools/clang/scripts/update.py.
+This script is based on chromium/chromium/main/tools/clang/scripts/update.py.
 
 It is used on Windows platforms to copy the correct msdia*.dll to the
 clang folder, as a "gclient hook".
@@ -16,11 +16,11 @@ import shutil
 import stat
 import sys
 
-
 # Path constants. (All of these should be absolute paths.)
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-LLVM_BUILD_DIR = os.path.abspath(os.path.join(THIS_DIR, '..', '..', 'third_party',
-                                              'llvm-build', 'Release+Asserts'))
+LLVM_BUILD_DIR = os.path.abspath(
+    os.path.join(THIS_DIR, '..', '..', 'buildtools', 'windows-x64', 'clang')
+)
 
 
 def GetDiaDll():
@@ -28,10 +28,11 @@ def GetDiaDll():
 
   # Bump after VC updates.
   DIA_DLL = {
-    '2013': 'msdia120.dll',
-    '2015': 'msdia140.dll',
-    '2017': 'msdia140.dll',
-    '2019': 'msdia140.dll',
+      '2013': 'msdia120.dll',
+      '2015': 'msdia140.dll',
+      '2017': 'msdia140.dll',
+      '2019': 'msdia140.dll',
+      '2022': 'msdia140.dll',
   }
 
   # Don't let vs_toolchain overwrite our environment.

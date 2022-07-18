@@ -115,7 +115,7 @@ Future<void> testMain() async {
 
   test('ellipsis (dom)', () {
     const Rect bounds = Rect.fromLTWH(0, 0, 300, 300);
-    final EngineCanvas canvas = DomCanvas(domRenderer.createElement('flt-picture'));
+    final EngineCanvas canvas = DomCanvas(domDocument.createElement('flt-picture'));
     testEllipsis(canvas);
     return takeScreenshot(canvas, bounds, 'canvas_paragraph_ellipsis_dom');
   });

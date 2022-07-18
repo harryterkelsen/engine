@@ -130,6 +130,7 @@ FileType identifyFile(String name, Reader reader) {
     // Giant data files
     case 'icudtl_dat.S':
     case 'icudtl.dat':
+    case 'icudtl.dat.hash':
       return FileType.binary;
   }
   switch (path.extension(name)) {
@@ -220,6 +221,7 @@ FileType identifyFile(String name, Reader reader) {
     case '.keystore': return FileType.binary;
     case '.icc': return FileType.binary; // Color profile
     case '.swp': return FileType.binary; // Vim swap file
+    case '.bfbs': return FileType.binary; // Flatbuffers Binary Schema
     // Archives
     case '.zip': return FileType.zip; // ZIP
     case '.tar': return FileType.tar; // Tar

@@ -14,10 +14,8 @@ void main() {
   internalBootstrapBrowserTest(() => testMain);
 }
 
-void testMain() {
-  setUpAll(() {
-    WebExperiments.ensureInitialized();
-  });
+Future<void> testMain() async {
+  await initializeEngine();
 
   group('EngineCanvas', () {
     late MockEngineCanvas mockCanvas;
@@ -31,7 +29,7 @@ void testMain() {
     }) {
       test(description, () {
         testFn(BitmapCanvas(canvasSize, RenderStrategy()));
-        testFn(DomCanvas(domRenderer.createElement('flt-picture')));
+        testFn(DomCanvas(domDocument.createElement('flt-picture')));
         testFn(mockCanvas = MockEngineCanvas());
         whenDone?.call();
       });

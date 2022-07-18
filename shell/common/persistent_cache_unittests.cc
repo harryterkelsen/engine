@@ -10,7 +10,6 @@
 #include "flutter/flow/layers/container_layer.h"
 #include "flutter/flow/layers/layer.h"
 #include "flutter/flow/layers/physical_shape_layer.h"
-#include "flutter/flow/layers/picture_layer.h"
 #include "flutter/fml/command_line.h"
 #include "flutter/fml/file.h"
 #include "flutter/fml/log_settings.h"
@@ -41,11 +40,6 @@ static void WaitForRaster(Shell* shell) {
 }
 
 TEST_F(PersistentCacheTest, CacheSkSLWorks) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires vm service sandboxing fix";
-#endif  // defined(WINUWP)
-
   // Create a temp dir to store the persistent cache
   fml::ScopedTemporaryDirectory dir;
   PersistentCache::SetCacheDirectoryPath(dir.path());
@@ -209,11 +203,6 @@ static void CheckTwoSkSLsAreLoaded() {
 }
 
 TEST_F(PersistentCacheTest, CanLoadSkSLsFromAsset) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires filesystem sandboxing fix";
-#endif  // defined(WINUWP)
-
   // Avoid polluting unit tests output by hiding INFO level logging.
   fml::LogSettings warning_only = {fml::LOG_WARNING};
   fml::ScopedSetLogSettings scoped_set_log_settings(warning_only);
@@ -278,11 +267,6 @@ TEST_F(PersistentCacheTest, CanLoadSkSLsFromAsset) {
 }
 
 TEST_F(PersistentCacheTest, CanRemoveOldPersistentCache) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires filesystem sandboxing fix";
-#endif  // defined(WINUWP)
-
   fml::ScopedTemporaryDirectory base_dir;
   ASSERT_TRUE(base_dir.fd().is_valid());
 
@@ -313,11 +297,6 @@ TEST_F(PersistentCacheTest, CanRemoveOldPersistentCache) {
 }
 
 TEST_F(PersistentCacheTest, CanPurgePersistentCache) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires filesystem sandboxing fix";
-#endif  // defined(WINUWP)
-
   fml::ScopedTemporaryDirectory base_dir;
   ASSERT_TRUE(base_dir.fd().is_valid());
   auto cache_dir = fml::CreateDirectory(
@@ -350,11 +329,6 @@ TEST_F(PersistentCacheTest, CanPurgePersistentCache) {
 }
 
 TEST_F(PersistentCacheTest, PurgeAllowsFutureSkSLCache) {
-#if defined(WINUWP)
-  // TODO(cbracken): Re-enable. https://github.com/flutter/flutter/issues/90481
-  GTEST_SKIP() << "Skipped on WinUWP; requires filesystem sandboxing fix";
-#endif  // defined(WINUWP)
-
   sk_sp<SkData> shader_key = SkData::MakeWithCString("key");
   sk_sp<SkData> shader_value = SkData::MakeWithCString("value");
   std::string shader_filename = PersistentCache::SkKeyToFilePath(*shader_key);

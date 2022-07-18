@@ -26,6 +26,9 @@ enum LintAction {
 
   /// Fail due to a malformed FLUTTER_NOLINT comment.
   failMalformedNoLint,
+
+  /// Ignore because the file doesn't exist locally.
+  skipMissing,
 }
 
 /// A compilation command and methods to generate the lint command and job for
@@ -52,6 +55,7 @@ class Command {
 
   static final RegExp _pathRegex = RegExp(r'\S*clang/bin/clang');
   static final RegExp _argRegex = RegExp(r'-MF \S*');
+  static final RegExp _windowsRspRegex = RegExp(r'@ (\S*)');
 
   String? _tidyArgs;
 
@@ -60,6 +64,15 @@ class Command {
     return _tidyArgs ??= (() {
       String result = command;
       result = result.replaceAll(_pathRegex, '');
+      if (io.Platform.isWindows) {
+        final io.File rsp = io.File(path.join(
+          directory.path,
+          _windowsRspRegex.firstMatch(command)?.group(1) ?? '',
+        ));
+        if (rsp.existsSync()) {
+          result = rsp.readAsStringSync().replaceAll('/std:', '-std=');
+        }
+      }
       result = result.replaceAll(_argRegex, '');
       return result;
     })();
@@ -69,10 +82,20 @@ class Command {
 
   /// The command but with clang-tidy instead of clang.
   String get tidyPath {
-    return _tidyPath ??= _pathRegex.stringMatch(command)?.replaceAll(
-      'clang/bin/clang',
-      'clang/bin/clang-tidy',
-    ) ?? '';
+    String clangTidy() {
+      String clangTidy = _pathRegex.stringMatch(command)?.replaceAll(
+                'clang/bin/clang',
+                'clang/bin/clang-tidy',
+              ) ?? '';
+      if (io.Platform.isWindows) {
+        // On Windows [Process].run() sets the working dir after executing the process
+        clangTidy = path.join(directory.path, clangTidy);
+      }
+
+      return clangTidy;
+    }
+
+    return _tidyPath ??= clangTidy();
   }
 
   /// Whether this command operates on any of the files in `queries`.
@@ -86,20 +109,20 @@ class Command {
     r'//\s*FLUTTER_NOLINT(: https://github.com/flutter/flutter/issues/\d+)?',
   );
 
-  LintAction? _lintAction;
-
   /// The type of lint that is appropriate for this command.
-  Future<LintAction> get lintAction async =>
-    _lintAction ??= await getLintAction(filePath);
+  late final Future<LintAction> lintAction = getLintAction(filePath);
 
   /// Determine the lint action for the file at `path`.
   @visibleForTesting
-  static Future<LintAction> getLintAction(String filePath) {
+  static Future<LintAction> getLintAction(String filePath) async {
     if (path.split(filePath).contains('third_party')) {
-      return Future<LintAction>.value(LintAction.skipThirdParty);
+      return LintAction.skipThirdParty;
     }
 
     final io.File file = io.File(filePath);
+    if (!file.existsSync()) {
+      return LintAction.skipMissing;
+    }
     final Stream<String> lines = file.openRead()
       .transform(utf8.decoder)
       .transform(const LineSplitter());
@@ -126,8 +149,17 @@ class Command {
   }
 
   /// The job for the process runner for the lint needed for this command.
-  WorkerJob createLintJob(String checks) {
-    final List<String> args = <String>[filePath, checks, '--'];
+  WorkerJob createLintJob(String? checks, bool fix) {
+    final List<String> args = <String>[
+      filePath,
+      if (checks != null)
+        checks,
+      if (fix) ...<String>[
+        '--fix',
+        '--format-style=file',
+      ],
+      '--',
+    ];
     args.addAll(tidyArgs.split(' '));
     return WorkerJob(
       <String>[tidyPath, ...args],

@@ -25,6 +25,8 @@ class Environment {
         io.Directory(pathlib.join(engineSrcDir.path, 'out'));
     final io.Directory hostDebugUnoptDir =
         io.Directory(pathlib.join(outDir.path, 'host_debug_unopt'));
+    final io.Directory canvasKitOutDir =
+        io.Directory(pathlib.join(outDir.path, 'wasm_debug'));
     final io.Directory dartSdkDir =
         io.Directory(pathlib.join(hostDebugUnoptDir.path, 'dart-sdk'));
     final io.Directory webUiRootDir = io.Directory(
@@ -49,6 +51,7 @@ class Environment {
       engineToolsDir: engineToolsDir,
       outDir: outDir,
       hostDebugUnoptDir: hostDebugUnoptDir,
+      canvasKitOutDir: canvasKitOutDir,
       dartSdkDir: dartSdkDir,
     );
   }
@@ -60,6 +63,7 @@ class Environment {
     required this.engineToolsDir,
     required this.outDir,
     required this.hostDebugUnoptDir,
+    required this.canvasKitOutDir,
     required this.dartSdkDir,
   });
 
@@ -83,6 +87,9 @@ class Environment {
   /// The "host_debug_unopt" build of the Dart SDK.
   final io.Directory hostDebugUnoptDir;
 
+  /// The output directory for the build of CanvasKit.
+  final io.Directory canvasKitOutDir;
+
   /// The root of the Dart SDK.
   final io.Directory dartSdkDir;
 
@@ -91,10 +98,6 @@ class Environment {
 
   /// The "pub" executable file.
   String get pubExecutable => pathlib.join(dartSdkDir.path, 'bin', 'pub');
-
-  /// The "dart2js" executable file.
-  String get dart2jsExecutable =>
-      pathlib.join(dartSdkDir.path, 'bin', 'dart2js');
 
   /// Path to where github.com/flutter/engine is checked out inside the engine workspace.
   io.Directory get flutterDirectory =>
@@ -153,10 +156,10 @@ class Environment {
         'lib',
       ));
 
-  /// Path to the clone of the flutter/goldens repository.
-  io.Directory get webUiGoldensRepositoryDirectory => io.Directory(pathlib.join(
+  /// Path to the base directory to be used by Skia Gold.
+  io.Directory get webUiSkiaGoldDirectory => io.Directory(pathlib.join(
         webUiDartToolDir.path,
-        'goldens',
+        'skia_gold',
       ));
 
   /// Directory to add test results which would later be uploaded to a gcs

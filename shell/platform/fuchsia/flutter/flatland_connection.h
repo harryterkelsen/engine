@@ -30,13 +30,12 @@ static constexpr fml::TimeDelta kDefaultFlatlandPresentationInterval =
 // maintaining the Flatland instance connection and presenting updates.
 class FlatlandConnection final {
  public:
-  FlatlandConnection(
-      std::string debug_label,
-      fidl::InterfaceHandle<fuchsia::ui::composition::Flatland> flatland,
-      fml::closure error_callback,
-      on_frame_presented_event on_frame_presented_callback,
-      uint64_t max_frames_in_flight,
-      fml::TimeDelta vsync_offset);
+  FlatlandConnection(std::string debug_label,
+                     fuchsia::ui::composition::FlatlandHandle flatland,
+                     fml::closure error_callback,
+                     on_frame_presented_event on_frame_presented_callback,
+                     uint64_t max_frames_in_flight,
+                     fml::TimeDelta vsync_offset);
 
   ~FlatlandConnection();
 
@@ -67,6 +66,7 @@ class FlatlandConnection final {
   void OnNextFrameBegin(
       fuchsia::ui::composition::OnNextFrameBeginValues values);
   void OnFramePresented(fuchsia::scenic::scheduling::FramePresentedInfo info);
+  void DoPresent();
 
   fuchsia::ui::composition::FlatlandPtr flatland_;
 
@@ -77,17 +77,17 @@ class FlatlandConnection final {
 
   on_frame_presented_event on_frame_presented_callback_;
   uint32_t present_credits_ = 1;
+  bool present_pending_ = false;
 
   // This struct contains state that is accessed from both from the UI thread
-  // (in AwaitVsync) and the raster thread (in OnNextFrameBegin). You should
-  // always lock mutex_ before touching anything in this struct
+  // (in AwaitVsync) and the raster thread (in OnNextFrameBegin and Present).
+  // You should always lock mutex_ before touching anything in this struct
   struct {
     std::mutex mutex_;
     FireCallbackCallback fire_callback_;
     bool fire_callback_pending_ = false;
+    bool first_present_called_ = false;
   } threadsafe_state_;
-
-  bool first_call_to_await_vsync_ = true;
 
   std::vector<zx::event> acquire_fences_;
   std::vector<zx::event> current_present_release_fences_;

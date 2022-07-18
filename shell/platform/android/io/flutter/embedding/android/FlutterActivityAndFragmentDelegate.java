@@ -4,7 +4,6 @@
 
 package io.flutter.embedding.android;
 
-import static android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL;
 import static android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.DEFAULT_INITIAL_ROUTE;
 
@@ -31,6 +30,7 @@ import io.flutter.embedding.engine.renderer.FlutterUiDisplayListener;
 import io.flutter.plugin.platform.PlatformPlugin;
 import io.flutter.util.ViewUtils;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * Delegate that implements all Flutter logic that is the same between a {@link FlutterActivity} and
@@ -71,16 +71,23 @@ import java.util.Arrays;
   private static final String PLUGINS_RESTORATION_BUNDLE_KEY = "plugins";
   private static final int FLUTTER_SPLASH_VIEW_FALLBACK_ID = 486947586;
 
+  /** Factory to obtain a FlutterActivityAndFragmentDelegate instance. */
+  public interface DelegateFactory {
+    FlutterActivityAndFragmentDelegate createDelegate(FlutterActivityAndFragmentDelegate.Host host);
+  }
+
   // The FlutterActivity or FlutterFragment that is delegating most of its calls
   // to this FlutterActivityAndFragmentDelegate.
   @NonNull private Host host;
   @Nullable private FlutterEngine flutterEngine;
-  @Nullable private FlutterView flutterView;
+  @VisibleForTesting @Nullable FlutterView flutterView;
   @Nullable private PlatformPlugin platformPlugin;
   @VisibleForTesting @Nullable OnPreDrawListener activePreDrawListener;
   private boolean isFlutterEngineFromHost;
   private boolean isFlutterUiDisplayed;
   private boolean isFirstFrameRendered;
+  private boolean isAttached;
+  private Integer previousVisibility;
 
   @NonNull
   private final FlutterUiDisplayListener flutterUiDisplayListener =
@@ -140,6 +147,14 @@ import java.util.Arrays;
   }
 
   /**
+   * Whether or not this {@code FlutterActivityAndFragmentDelegate} is attached to a {@code
+   * FlutterEngine}.
+   */
+  /* package */ boolean isAttached() {
+    return isAttached;
+  }
+
+  /**
    * Invoke this method from {@code Activity#onCreate(Bundle)} or {@code
    * Fragment#onAttach(Context)}.
    *
@@ -189,6 +204,7 @@ import java.util.Arrays;
     platformPlugin = host.providePlatformPlugin(host.getActivity(), flutterEngine);
 
     host.configureFlutterEngine(flutterEngine);
+    isAttached = true;
   }
 
   @Override
@@ -379,6 +395,14 @@ import java.util.Arrays;
     Log.v(TAG, "onStart()");
     ensureAlive();
     doInitialFlutterViewRun();
+    // This is a workaround for a bug on some OnePlus phones. The visibility of the application
+    // window is still true after locking the screen on some OnePlus phones, and shows a black
+    // screen when unlocked. We can work around this by changing the visibility of FlutterView in
+    // onStart and onStop.
+    // See https://github.com/flutter/flutter/issues/93276
+    if (previousVisibility != null) {
+      flutterView.setVisibility(previousVisibility);
+    }
   }
 
   /**
@@ -408,12 +432,16 @@ import java.util.Arrays;
         initialRoute = DEFAULT_INITIAL_ROUTE;
       }
     }
+    @Nullable String libraryUri = host.getDartEntrypointLibraryUri();
     Log.v(
         TAG,
         "Executing Dart entrypoint: "
-            + host.getDartEntrypointFunctionName()
-            + ", and sending initial route: "
-            + initialRoute);
+                    + host.getDartEntrypointFunctionName()
+                    + ", library uri: "
+                    + libraryUri
+                == null
+            ? "\"\""
+            : libraryUri + ", and sending initial route: " + initialRoute);
 
     // The engine needs to receive the Flutter app's initial route before executing any
     // Dart code to ensure that the initial route arrives in time to be applied.
@@ -426,23 +454,28 @@ import java.util.Arrays;
 
     // Configure the Dart entrypoint and execute it.
     DartExecutor.DartEntrypoint entrypoint =
-        new DartExecutor.DartEntrypoint(
-            appBundlePathOverride, host.getDartEntrypointFunctionName());
-    flutterEngine.getDartExecutor().executeDartEntrypoint(entrypoint);
+        libraryUri == null
+            ? new DartExecutor.DartEntrypoint(
+                appBundlePathOverride, host.getDartEntrypointFunctionName())
+            : new DartExecutor.DartEntrypoint(
+                appBundlePathOverride, libraryUri, host.getDartEntrypointFunctionName());
+    flutterEngine.getDartExecutor().executeDartEntrypoint(entrypoint, host.getDartEntrypointArgs());
   }
 
   private String maybeGetInitialRouteFromIntent(Intent intent) {
     if (host.shouldHandleDeeplinking()) {
       Uri data = intent.getData();
-      if (data != null && !data.getPath().isEmpty()) {
+      if (data != null) {
         String fullRoute = data.getPath();
-        if (data.getQuery() != null && !data.getQuery().isEmpty()) {
-          fullRoute += "?" + data.getQuery();
+        if (fullRoute != null && !fullRoute.isEmpty()) {
+          if (data.getQuery() != null && !data.getQuery().isEmpty()) {
+            fullRoute += "?" + data.getQuery();
+          }
+          if (data.getFragment() != null && !data.getFragment().isEmpty()) {
+            fullRoute += "#" + data.getFragment();
+          }
+          return fullRoute;
         }
-        if (data.getFragment() != null && !data.getFragment().isEmpty()) {
-          fullRoute += "#" + data.getFragment();
-        }
-        return fullRoute;
       }
     }
     return null;
@@ -489,7 +522,9 @@ import java.util.Arrays;
   void onResume() {
     Log.v(TAG, "onResume()");
     ensureAlive();
-    flutterEngine.getLifecycleChannel().appIsResumed();
+    if (host.shouldDispatchAppLifecycleState()) {
+      flutterEngine.getLifecycleChannel().appIsResumed();
+    }
   }
 
   /**
@@ -535,7 +570,9 @@ import java.util.Arrays;
   void onPause() {
     Log.v(TAG, "onPause()");
     ensureAlive();
-    flutterEngine.getLifecycleChannel().appIsInactive();
+    if (host.shouldDispatchAppLifecycleState()) {
+      flutterEngine.getLifecycleChannel().appIsInactive();
+    }
   }
 
   /**
@@ -555,7 +592,18 @@ import java.util.Arrays;
   void onStop() {
     Log.v(TAG, "onStop()");
     ensureAlive();
-    flutterEngine.getLifecycleChannel().appIsPaused();
+
+    if (host.shouldDispatchAppLifecycleState()) {
+      flutterEngine.getLifecycleChannel().appIsPaused();
+    }
+
+    // This is a workaround for a bug on some OnePlus phones. The visibility of the application
+    // window is still true after locking the screen on some OnePlus phones, and shows a black
+    // screen when unlocked. We can work around this by changing the visibility of FlutterView in
+    // onStart and onStop.
+    // See https://github.com/flutter/flutter/issues/93276
+    previousVisibility = flutterView.getVisibility();
+    flutterView.setVisibility(View.GONE);
   }
 
   /**
@@ -651,7 +699,9 @@ import java.util.Arrays;
       platformPlugin = null;
     }
 
-    flutterEngine.getLifecycleChannel().appIsDetached();
+    if (host.shouldDispatchAppLifecycleState()) {
+      flutterEngine.getLifecycleChannel().appIsDetached();
+    }
 
     // Destroy our FlutterEngine if we're not set to retain it.
     if (host.shouldDestroyEngineWithHost()) {
@@ -663,6 +713,8 @@ import java.util.Arrays;
 
       flutterEngine = null;
     }
+
+    isAttached = false;
   }
 
   /**
@@ -796,30 +848,13 @@ import java.util.Arrays;
       // Avoid being too aggressive before the first frame is rendered. If it is
       // not at least running critical, we should avoid delaying the frame for
       // an overly aggressive GC.
-      boolean trim =
-          isFirstFrameRendered
-              ? level >= TRIM_MEMORY_RUNNING_LOW
-              : level >= TRIM_MEMORY_RUNNING_CRITICAL;
+      boolean trim = isFirstFrameRendered && level >= TRIM_MEMORY_RUNNING_LOW;
       if (trim) {
         flutterEngine.getDartExecutor().notifyLowMemoryWarning();
         flutterEngine.getSystemChannel().sendMemoryPressureWarning();
       }
+      flutterEngine.getRenderer().onTrimMemory(level);
     }
-  }
-
-  /**
-   * Invoke this from {@link android.app.Activity#onLowMemory()}.
-   *
-   * <p>A {@code Fragment} host must have its containing {@code Activity} forward this call so that
-   * the {@code Fragment} can then invoke this method.
-   *
-   * <p>This method sends a "memory pressure warning" message to Flutter over the "system channel".
-   */
-  void onLowMemory() {
-    Log.v(TAG, "Forwarding onLowMemory() to FlutterEngine.");
-    ensureAlive();
-    flutterEngine.getDartExecutor().notifyLowMemoryWarning();
-    flutterEngine.getSystemChannel().sendMemoryPressureWarning();
   }
 
   /**
@@ -906,6 +941,18 @@ import java.util.Arrays;
     @NonNull
     String getDartEntrypointFunctionName();
 
+    /**
+     * Returns the URI of the Dart library which contains the entrypoint method (example
+     * "package:foo_package/main.dart"). If null, this will default to the same library as the
+     * `main()` function in the Dart program.
+     */
+    @Nullable
+    String getDartEntrypointLibraryUri();
+
+    /** Returns arguments that passed as a list of string to Dart's entrypoint function. */
+    @Nullable
+    List<String> getDartEntrypointArgs();
+
     /** Returns the path to the app bundle where the Dart code exists. */
     @NonNull
     String getAppBundlePath();
@@ -927,6 +974,20 @@ import java.util.Arrays;
      */
     @NonNull
     TransparencyMode getTransparencyMode();
+
+    /**
+     * Returns the {@link ExclusiveAppComponent<Activity>} that is associated with {@link
+     * io.flutter.embedding.engine.FlutterEngine}.
+     *
+     * <p>In the scenario where multiple {@link FlutterActivity} or {@link FlutterFragment} share
+     * the same {@link FlutterEngine}, to attach/re-attache a {@link FlutterActivity} or {@link
+     * FlutterFragment} to the shared {@link FlutterEngine}, we MUST manually invoke {@link
+     * ActivityControlSurface#attachToActivity(ExclusiveAppComponent, Lifecycle)}.
+     *
+     * <p>The {@link ExclusiveAppComponent} is exposed here so that subclasses of {@link
+     * FlutterActivity} or {@link FlutterFragment} can access it.
+     */
+    ExclusiveAppComponent<Activity> getExclusiveAppComponent();
 
     @Nullable
     SplashScreen provideSplashScreen();
@@ -1027,5 +1088,28 @@ import java.util.Arrays;
      * SplashScreenView#remove}.
      */
     void updateSystemUiOverlays();
+
+    /**
+     * Give the host application a chance to take control of the app lifecycle events to avoid
+     * lifecycle crosstalk.
+     *
+     * <p>In the add-to-app scenario where multiple {@link FlutterActivity} shares the same {@link
+     * FlutterEngine}, the application lifecycle state will have crosstalk causing the page to
+     * freeze. For example, we open a new page called FlutterActivity#2 from the previous page
+     * called FlutterActivity#1. The flow of app lifecycle states received by dart is as follows:
+     *
+     * <p>inactive (from FlutterActivity#1) -> resumed (from FlutterActivity#2) -> paused (from
+     * FlutterActivity#1)
+     *
+     * <p>On the one hand, the {@code paused} state from FlutterActivity#1 will cause the
+     * FlutterActivity#2 page to be stuck; On the other hand, these states are not expected from the
+     * perspective of the entire application lifecycle. If the host application gets the control of
+     * sending {@link AppLifecycleState}, It will be possible to correctly match the {@link
+     * AppLifecycleState} with the application-level lifecycle.
+     *
+     * <p>Return {@code false} means the host application dispatches these app lifecycle events,
+     * while return {@code true} means the engine dispatches these events.
+     */
+    boolean shouldDispatchAppLifecycleState();
   }
 }

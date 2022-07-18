@@ -13,6 +13,33 @@ void main() {}
 void _finish() native 'Finish';
 
 @pragma('vm:entry-point')
+void customOnErrorTrue() {
+  PlatformDispatcher.instance.onError = (Object error, StackTrace? stack) {
+    _finish();
+    return true;
+  };
+  throw Exception('true');
+}
+
+@pragma('vm:entry-point')
+void customOnErrorFalse() {
+  PlatformDispatcher.instance.onError = (Object error, StackTrace? stack) {
+    _finish();
+    return false;
+  };
+  throw Exception('false');
+}
+
+@pragma('vm:entry-point')
+void customOnErrorThrow() {
+  PlatformDispatcher.instance.onError = (Object error, StackTrace? stack) {
+    _finish();
+    throw Exception('throw2');
+  };
+  throw Exception('throw1');
+}
+
+@pragma('vm:entry-point')
 void validateSceneBuilderAndScene() {
   final SceneBuilder builder = SceneBuilder();
   builder.pushOffset(10, 10);
@@ -311,9 +338,9 @@ void hooksTests() {
     }
   }
 
-  void expectIdentical(Zone originalZone, Zone callbackZone) {
-    if (!identical(callbackZone, originalZone)) {
-      throw 'Callback called in wrong zone.';
+  void expectIdentical(Object a, Object b) {
+    if (!identical(a, b)) {
+      throw 'Expected $a to be identical to $b.';
     }
   }
 
@@ -339,7 +366,7 @@ void hooksTests() {
     window.onMetricsChanged!();
     _callHook(
       '_updateWindowMetrics',
-      17,
+      20,
       0, // window Id
       0.1234, // device pixel ratio
       0.0,    // width
@@ -355,14 +382,37 @@ void hooksTests() {
       0.0,    // system gesture inset top
       0.0,    // system gesture inset right
       0.0,    // system gesture inset bottom
-      0.0,    // system gesture inset left,
+      0.0,    // system gesture inset left
       22.0,   // physicalTouchSlop
+      <double>[],  // display features bounds
+      <int>[],     // display features types
+      <int>[],     // display features states
     );
 
     expectIdentical(originalZone, callbackZone);
     if (devicePixelRatio != 0.1234) {
       throw 'Expected devicePixelRatio to be 0.1234 but got $devicePixelRatio.';
     }
+  });
+
+  test('onError preserves the callback zone', () {
+    late Zone originalZone;
+    late Zone callbackZone;
+    final Object error = Exception('foo');
+    StackTrace? stackTrace;
+
+    runZoned(() {
+      originalZone = Zone.current;
+      PlatformDispatcher.instance.onError = (Object exception, StackTrace? stackTrace) {
+        callbackZone = Zone.current;
+        expectIdentical(exception, error);
+        expectNotEquals(stackTrace, null);
+        return true;
+      };
+    });
+
+    _callHook('_onError', 2, error, StackTrace.current);
+    expectIdentical(originalZone, callbackZone);
   });
 
   test('updateUserSettings can handle an empty object', () {
@@ -400,10 +450,18 @@ void hooksTests() {
     }
   });
 
+  test('deprecated region equals', () {
+    // These are equal because ZR is deprecated and was mapped to CD.
+    const Locale x = Locale('en', 'ZR');
+    const Locale y = Locale('en', 'CD');
+    expectEquals(x, y);
+    expectEquals(x.countryCode, y.countryCode);
+  });
+
   test('Window padding/insets/viewPadding/systemGestureInsets', () {
     _callHook(
       '_updateWindowMetrics',
-      17,
+      20,
       0, // window Id
       1.0, // devicePixelRatio
       800.0, // width
@@ -421,6 +479,9 @@ void hooksTests() {
       0.0, // systemGestureInsetBottom
       0.0, // systemGestureInsetLeft
       22.0, // physicalTouchSlop
+      <double>[],  // display features bounds
+      <int>[],     // display features types
+      <int>[],     // display features states
     );
 
     expectEquals(window.viewInsets.bottom, 0.0);
@@ -430,7 +491,7 @@ void hooksTests() {
 
     _callHook(
       '_updateWindowMetrics',
-      17,
+      20,
       0, // window Id
       1.0, // devicePixelRatio
       800.0, // width
@@ -448,6 +509,9 @@ void hooksTests() {
       44.0, // systemGestureInsetBottom
       0.0, // systemGestureInsetLeft
       22.0, // physicalTouchSlop
+      <double>[],  // display features bounds
+      <int>[],     // display features types
+      <int>[],     // display features states
     );
 
     expectEquals(window.viewInsets.bottom, 400.0);
@@ -459,7 +523,7 @@ void hooksTests() {
    test('Window physical touch slop', () {
     _callHook(
       '_updateWindowMetrics',
-      17,
+      20,
       0, // window Id
       1.0, // devicePixelRatio
       800.0, // width
@@ -477,6 +541,9 @@ void hooksTests() {
       0.0, // systemGestureInsetBottom
       0.0, // systemGestureInsetLeft
       11.0, // physicalTouchSlop
+      <double>[],  // display features bounds
+      <int>[],     // display features types
+      <int>[],     // display features states
     );
 
     expectEquals(window.viewConfiguration.gestureSettings,
@@ -484,7 +551,7 @@ void hooksTests() {
 
     _callHook(
       '_updateWindowMetrics',
-      17,
+      20,
       0, // window Id
       1.0, // devicePixelRatio
       800.0, // width
@@ -502,6 +569,9 @@ void hooksTests() {
       44.0, // systemGestureInsetBottom
       0.0, // systemGestureInsetLeft
       -1.0, // physicalTouchSlop
+      <double>[],  // display features bounds
+      <int>[],     // display features types
+      <int>[],     // display features states
     );
 
     expectEquals(window.viewConfiguration.gestureSettings,
@@ -509,7 +579,7 @@ void hooksTests() {
 
     _callHook(
       '_updateWindowMetrics',
-      17,
+      20,
       0, // window Id
       1.0, // devicePixelRatio
       800.0, // width
@@ -527,6 +597,9 @@ void hooksTests() {
       44.0, // systemGestureInsetBottom
       0.0, // systemGestureInsetLeft
       22.0, // physicalTouchSlop
+      <double>[],  // display features bounds
+      <int>[],     // display features types
+      <int>[],     // display features states
     );
 
     expectEquals(window.viewConfiguration.gestureSettings,
@@ -729,7 +802,96 @@ void hooksTests() {
     expectEquals(frameNumber, 2);
   });
 
+  test('_futureize handles callbacker sync error', () async {
+    String? callbacker(void Function(Object? arg) cb) {
+      return 'failure';
+    }
+    Object? error;
+    try {
+      await _futurize(callbacker);
+    } catch (err) {
+      error = err;
+    }
+    expectNotEquals(error, null);
+  });
+
+  test('_futureize does not leak sync uncaught exceptions into the zone', () async {
+    String? callbacker(void Function(Object? arg) cb) {
+      cb(null); // indicates failure
+    }
+    Object? error;
+    try {
+      await _futurize(callbacker);
+    } catch (err) {
+      error = err;
+    }
+    expectNotEquals(error, null);
+  });
+
+  test('_futureize does not leak async uncaught exceptions into the zone', () async {
+    String? callbacker(void Function(Object? arg) cb) {
+      Timer.run(() {
+        cb(null); // indicates failure
+      });
+    }
+    Object? error;
+    try {
+      await _futurize(callbacker);
+    } catch (err) {
+      error = err;
+    }
+    expectNotEquals(error, null);
+  });
+
+  test('_futureize successfully returns a value sync', () async {
+    String? callbacker(void Function(Object? arg) cb) {
+      cb(true);
+    }
+    final Object? result = await _futurize(callbacker);
+
+    expectEquals(result, true);
+  });
+
+  test('_futureize successfully returns a value async', () async {
+    String? callbacker(void Function(Object? arg) cb) {
+      Timer.run(() {
+        cb(true);
+      });
+    }
+    final Object? result = await _futurize(callbacker);
+
+    expectEquals(result, true);
+  });
+
   _finish();
+}
+
+typedef _Callback<T> = void Function(T result);
+typedef _Callbacker<T> = String? Function(_Callback<T?> callback);
+
+// This is an exact copy of the function defined in painting.dart. If you change either
+// then you must change both.
+Future<T> _futurize<T>(_Callbacker<T> callbacker) {
+  final Completer<T> completer = Completer<T>.sync();
+  // If the callback synchronously throws an error, then synchronously
+  // rethrow that error instead of adding it to the completer. This
+  // prevents the Zone from receiving an uncaught exception.
+  bool sync = true;
+  final String? error = callbacker((T? t) {
+    if (t == null) {
+      if (sync) {
+        throw Exception('operation failed');
+      } else {
+        completer.completeError(Exception('operation failed'));
+      }
+    } else {
+      completer.complete(t);
+    }
+  });
+  sync = false;
+  if (error != null)
+    throw Exception(error);
+  return completer.future;
 }
 
 void _callHook(
@@ -752,4 +914,7 @@ void _callHook(
   Object? arg15,
   Object? arg16,
   Object? arg17,
+  Object? arg18,
+  Object? arg19,
+  Object? arg20,
 ]) native 'CallHook';

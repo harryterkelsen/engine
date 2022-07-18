@@ -16,23 +16,7 @@ namespace flutter {
 
 static constexpr const char* kVsyncFlowName = "VsyncFlow";
 
-#if defined(OS_FUCHSIA)
-//  ________  _________  ________  ________
-// |\   ____\|\___   ___\\   __  \|\   __  \
-// \ \  \___|\|___ \  \_\ \  \|\  \ \  \|\  \
-//  \ \_____  \   \ \  \ \ \  \\\  \ \   ____\
-//   \|____|\  \   \ \  \ \ \  \\\  \ \  \___|
-//     ____\_\  \   \ \__\ \ \_______\ \__\
-//    |\_________\   \|__|  \|_______|\|__|
-//    \|_________|
-//
-// Fuchsia benchmarks depend on this trace event's name.  Please do not change
-// it without checking that the changes are compatible with Fuchsia benchmarks
-// first!
-static constexpr const char* kVsyncTraceName = "vsync callback";
-#else
 static constexpr const char* kVsyncTraceName = "VsyncProcessCallback";
-#endif
 
 VsyncWaiter::VsyncWaiter(TaskRunners task_runners)
     : task_runners_(std::move(task_runners)) {}
@@ -133,13 +117,8 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
 
     TRACE_FLOW_BEGIN("flutter", kVsyncFlowName, flow_identifier);
 
-    fml::TaskQueueId ui_task_queue_id = fml::_kUnmerged;
-    if (pause_secondary_tasks) {
-      // Guarding `GetTaskQueueId` behind `pause_secondary_tasks` as on Fuchsia
-      // the task runners don't initialize message loop task queues.
-      // Once the migration to embedder API is done, this can be deleted.
-      ui_task_queue_id = task_runners_.GetUITaskRunner()->GetTaskQueueId();
-    }
+    fml::TaskQueueId ui_task_queue_id =
+        task_runners_.GetUITaskRunner()->GetTaskQueueId();
 
     task_runners_.GetUITaskRunner()->PostTask(
         [ui_task_queue_id, callback, flow_identifier, frame_start_time,
@@ -159,8 +138,7 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
   }
 
   for (auto& secondary_callback : secondary_callbacks) {
-    task_runners_.GetUITaskRunner()->PostTaskForTime(
-        std::move(secondary_callback), frame_start_time);
+    task_runners_.GetUITaskRunner()->PostTask(std::move(secondary_callback));
   }
 }
 

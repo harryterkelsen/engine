@@ -12,14 +12,12 @@ TextureLayer::TextureLayer(const SkPoint& offset,
                            const SkSize& size,
                            int64_t texture_id,
                            bool freeze,
-                           const SkSamplingOptions& sampling)
+                           DlImageSampling sampling)
     : offset_(offset),
       size_(size),
       texture_id_(texture_id),
       freeze_(freeze),
       sampling_(sampling) {}
-
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
 
 void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
@@ -30,12 +28,17 @@ void TextureLayer::Diff(DiffContext* context, const Layer* old_layer) {
     // dirty
     context->MarkSubtreeDirty(context->GetOldLayerPaintRegion(prev));
   }
+
+  // Make sure DiffContext knows there is a TextureLayer in this subtree.
+  // This prevents ContainerLayer from skipping TextureLayer diffing when
+  // TextureLayer is inside retained layer.
+  // See ContainerLayer::DiffChildren
+  // https://github.com/flutter/flutter/issues/92925
+  context->MarkSubtreeHasTextureLayer();
   context->AddLayerBounds(SkRect::MakeXYWH(offset_.x(), offset_.y(),
                                            size_.width(), size_.height()));
   context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
 }
-
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
 
 void TextureLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   TRACE_EVENT0("flutter", "TextureLayer::Preroll");
@@ -43,6 +46,7 @@ void TextureLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   set_paint_bounds(SkRect::MakeXYWH(offset_.x(), offset_.y(), size_.width(),
                                     size_.height()));
   context->has_texture_layer = true;
+  context->subtree_can_inherit_opacity = true;
 }
 
 void TextureLayer::Paint(PaintContext& context) const {
@@ -55,8 +59,9 @@ void TextureLayer::Paint(PaintContext& context) const {
     TRACE_EVENT_INSTANT0("flutter", "null texture");
     return;
   }
+  AutoCachePaint cache_paint(context);
   texture->Paint(*context.leaf_nodes_canvas, paint_bounds(), freeze_,
-                 context.gr_context, sampling_);
+                 context.gr_context, ToSk(sampling_), cache_paint.sk_paint());
 }
 
 }  // namespace flutter

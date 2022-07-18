@@ -4,17 +4,14 @@
 
 import 'package:test/bootstrap/browser.dart';
 import 'package:test/test.dart';
-import 'package:ui/src/engine.dart';
 import 'package:ui/ui.dart';
 
 void main() {
   internalBootstrapBrowserTest(() => testMain);
 }
 
-void testMain() {
-  setUpAll(() {
-    WebExperiments.ensureInitialized();
-  });
+Future<void> testMain() async {
+  await webOnlyInitializePlatform();
 
   test('Should be able to build and layout a paragraph', () {
     final ParagraphBuilder builder = ParagraphBuilder(ParagraphStyle());

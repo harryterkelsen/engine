@@ -2,9 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
-
 import 'package:meta/meta.dart';
+
+import 'dom.dart';
+
+// iOS 15 launched WebGL 2.0, but there's something broken about it, which
+// leads to apps failing to load. For now, we're forcing WebGL 1 on iOS.
+//
+// TODO(yjbanov): https://github.com/flutter/flutter/issues/91333
+bool get _workAroundBug91333 => operatingSystem == OperatingSystem.iOs;
 
 /// The HTML engine used by the current browser.
 enum BrowserEngine {
@@ -35,6 +41,7 @@ enum BrowserEngine {
 abstract class WebGLVersion {
   /// WebGL 1.0 is based on OpenGL ES 2.0 / GLSL 1.00
   static const int webgl1 = 1;
+
   /// WebGL 2.0 is based on OpenGL ES 3.0 / GLSL 3.00
   static const int webgl2 = 2;
 }
@@ -58,8 +65,8 @@ BrowserEngine get browserEngine {
 }
 
 BrowserEngine _detectBrowserEngine() {
-  final String vendor = html.window.navigator.vendor;
-  final String agent = html.window.navigator.userAgent.toLowerCase();
+  final String vendor = domWindow.navigator.vendor;
+  final String agent = domWindow.navigator.userAgent.toLowerCase();
   return detectBrowserEngineByVendorAgent(vendor, agent);
 }
 
@@ -74,7 +81,8 @@ BrowserEngine _detectBrowserEngine() {
 ///    Note: SAMSUNG-SGH-I717
 ///    SPH/SCH are very old Palm models.
 bool _isSamsungBrowser(String agent) {
-  final RegExp exp = RegExp(r'SAMSUNG|SGH-[I|N|T]|GT-[I|N]|SM-[A|N|P|T|Z]|SHV-E|SCH-[I|J|R|S]|SPH-L');
+  final RegExp exp = RegExp(
+      r'SAMSUNG|SGH-[I|N|T]|GT-[I|N]|SM-[A|N|P|T|Z]|SHV-E|SCH-[I|J|R|S]|SPH-L');
   return exp.hasMatch(agent.toUpperCase());
 }
 
@@ -159,14 +167,14 @@ OperatingSystem detectOperatingSystem({
   String? overrideUserAgent,
   int? overrideMaxTouchPoints,
 }) {
-  final String platform = overridePlatform ?? html.window.navigator.platform!;
-  final String userAgent = overrideUserAgent ?? html.window.navigator.userAgent;
+  final String platform = overridePlatform ?? domWindow.navigator.platform!;
+  final String userAgent = overrideUserAgent ?? domWindow.navigator.userAgent;
 
   if (platform.startsWith('Mac')) {
     // iDevices requesting a "desktop site" spoof their UA so it looks like a Mac.
     // This checks if we're in a touch device, or on a real mac.
     final int maxTouchPoints =
-        overrideMaxTouchPoints ?? html.window.navigator.maxTouchPoints ?? 0;
+        overrideMaxTouchPoints ?? domWindow.navigator.maxTouchPoints ?? 0;
     if (maxTouchPoints > 2) {
       return OperatingSystem.iOs;
     }
@@ -177,7 +185,7 @@ OperatingSystem detectOperatingSystem({
     return OperatingSystem.iOs;
   } else if (userAgent.contains('Android')) {
     // The Android OS reports itself as "Linux armv8l" in
-    // [html.window.navigator.platform]. So we have to check the user-agent to
+    // [domWindow.navigator.platform]. So we have to check the user-agent to
     // determine if the OS is Android or not.
     return OperatingSystem.android;
   } else if (platform.startsWith('Linux')) {
@@ -219,11 +227,35 @@ bool get isMacOrIOS =>
     operatingSystem == OperatingSystem.iOs ||
     operatingSystem == OperatingSystem.macOs;
 
+/// Detect iOS 15.
+bool get isIOS15 {
+  if (debugIsIOS15 != null) {
+    return debugIsIOS15!;
+  }
+  return operatingSystem == OperatingSystem.iOs &&
+      domWindow.navigator.userAgent.contains('OS 15_');
+}
+
+/// Returns true if the browser is iOS Safari, false otherwise.
+bool get isIosSafari =>
+    browserEngine == BrowserEngine.webkit &&
+    operatingSystem == OperatingSystem.iOs;
+
+/// Whether the current browser is Safari.
+bool get isSafari => browserEngine == BrowserEngine.webkit;
+
+/// Whether the current browser is Firefox.
+bool get isFirefox => browserEngine == BrowserEngine.firefox;
+
+/// Use in tests to simulate the detection of iOS 15.
+bool? debugIsIOS15;
+
 int? _cachedWebGLVersion;
 
 /// The highest WebGL version supported by the current browser, or -1 if WebGL
 /// is not supported.
-int get webGLVersion => _cachedWebGLVersion ?? (_cachedWebGLVersion = _detectWebGLVersion());
+int get webGLVersion =>
+    _cachedWebGLVersion ?? (_cachedWebGLVersion = _detectWebGLVersion());
 
 /// Detects the highest WebGL version supported by the current browser, or
 /// -1 if WebGL is not supported.
@@ -235,11 +267,14 @@ int get webGLVersion => _cachedWebGLVersion ?? (_cachedWebGLVersion = _detectWeb
 ///
 /// Our CanvasKit backend is affected due to: https://github.com/emscripten-core/emscripten/issues/11819
 int _detectWebGLVersion() {
-  final html.CanvasElement canvas = html.CanvasElement(
+  final DomCanvasElement canvas = createDomCanvasElement(
     width: 1,
     height: 1,
   );
   if (canvas.getContext('webgl2') != null) {
+    if (_workAroundBug91333) {
+      return WebGLVersion.webgl1;
+    }
     return WebGLVersion.webgl2;
   }
   if (canvas.getContext('webgl') != null) {

@@ -10,13 +10,10 @@
 #include "flutter/flow/flow_test_utils.h"
 #include "flutter/flow/raster_cache.h"
 #include "flutter/flow/testing/layer_test.h"
-#include "flutter/flow/testing/mock_layer.h"
-#include "flutter/fml/build_config.h"
-#include "flutter/fml/macros.h"
 #include "flutter/testing/mock_canvas.h"
-#include "gtest/gtest.h"
 #include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkSerialProcs.h"
+#include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/core/SkTextBlob.h"
 #include "third_party/skia/include/utils/SkBase64.h"
@@ -49,7 +46,7 @@ static void TestPerformanceOverlayLayerGold(int refresh_rate) {
   std::string golden_file_path = GetGoldenFilePath(refresh_rate, false);
   std::string new_golden_file_path = GetGoldenFilePath(refresh_rate, true);
 
-  flutter::Stopwatch mock_stopwatch(
+  FixedRefreshRateStopwatch mock_stopwatch(
       fml::RefreshRateToFrameBudget(refresh_rate));
   for (int i = 0; i < size(kMockedTimes); ++i) {
     mock_stopwatch.SetLapTime(
@@ -62,9 +59,20 @@ static void TestPerformanceOverlayLayerGold(int refresh_rate) {
   ASSERT_TRUE(surface != nullptr);
 
   flutter::TextureRegistry unused_texture_registry;
-  flutter::Layer::PaintContext paintContext = {
-      nullptr,        surface->getCanvas(),    nullptr, nullptr, mock_stopwatch,
-      mock_stopwatch, unused_texture_registry, nullptr, false};
+  flutter::PaintContext paintContext = {
+      // clang-format off
+      .internal_nodes_canvas         = nullptr,
+      .leaf_nodes_canvas             = surface->getCanvas(),
+      .gr_context                    = nullptr,
+      .view_embedder                 = nullptr,
+      .raster_time                   = mock_stopwatch,
+      .ui_time                       = mock_stopwatch,
+      .texture_registry              = unused_texture_registry,
+      .raster_cache                  = nullptr,
+      .checkerboard_offscreen_layers = false,
+      .frame_device_pixel_ratio      = 1.0f,
+      // clang-format on
+  };
 
   // Specify font file to ensure the same font across different operation
   // systems.
@@ -90,9 +98,9 @@ static void TestPerformanceOverlayLayerGold(int refresh_rate) {
 
   // TODO(https://github.com/flutter/flutter/issues/53784): enable this on all
   // platforms.
-#if !defined(OS_LINUX)
+#if !defined(FML_OS_LINUX)
   GTEST_SKIP() << "Skipping golden tests on non-Linux OSes";
-#endif  // OS_LINUX
+#endif  // FML_OS_LINUX
   const bool golden_data_matches = golden_data->equals(snapshot_data.get());
   if (!golden_data_matches) {
     SkFILEWStream wstream(new_golden_file_path.c_str());
@@ -181,6 +189,31 @@ TEST_F(PerformanceOverlayLayerTest, SimpleRasterizerStatistics) {
             std::vector({MockCanvas::DrawCall{
                 0, MockCanvas::DrawTextData{overlay_text_data, text_paint,
                                             text_position}}}));
+}
+
+TEST_F(PerformanceOverlayLayerTest, MarkAsDirtyWhenResized) {
+  // Regression test for https://github.com/flutter/flutter/issues/54188
+
+  // Create a PerformanceOverlayLayer.
+  const uint64_t overlay_opts = kVisualizeRasterizerStatistics;
+  auto layer = std::make_shared<PerformanceOverlayLayer>(overlay_opts);
+  layer->set_paint_bounds(SkRect::MakeLTRB(0.0f, 0.0f, 48.0f, 48.0f));
+  layer->Preroll(preroll_context(), SkMatrix());
+  layer->Paint(paint_context());
+  auto data = mock_canvas().draw_calls().front().data;
+  auto imageData = std::get<MockCanvas::DrawImageDataNoPaint>(data);
+  auto first_draw_width = imageData.image->width();
+
+  // Create a second PerformanceOverlayLayer with different bounds.
+  layer = std::make_shared<PerformanceOverlayLayer>(overlay_opts);
+  layer->set_paint_bounds(SkRect::MakeLTRB(0.0f, 0.0f, 64.0f, 64.0f));
+  layer->Preroll(preroll_context(), SkMatrix());
+  layer->Paint(paint_context());
+  data = mock_canvas().draw_calls().back().data;
+  imageData = std::get<MockCanvas::DrawImageDataNoPaint>(data);
+  auto refreshed_draw_width = imageData.image->width();
+
+  EXPECT_NE(first_draw_width, refreshed_draw_width);
 }
 
 TEST(PerformanceOverlayLayerDefault, Gold) {

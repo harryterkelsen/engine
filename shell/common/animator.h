@@ -34,11 +34,13 @@ class Animator final {
     virtual void OnAnimatorBeginFrame(fml::TimePoint frame_target_time,
                                       uint64_t frame_number) = 0;
 
-    virtual void OnAnimatorNotifyIdle(int64_t deadline) = 0;
+    virtual void OnAnimatorNotifyIdle(fml::TimePoint deadline) = 0;
+
+    virtual void OnAnimatorUpdateLatestFrameTargetTime(
+        fml::TimePoint frame_target_time) = 0;
 
     virtual void OnAnimatorDraw(
-        std::shared_ptr<Pipeline<flutter::LayerTree>> pipeline,
-        std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) = 0;
+        std::shared_ptr<LayerTreePipeline> pipeline) = 0;
 
     virtual void OnAnimatorDrawLastLayerTree(
         std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder) = 0;
@@ -53,6 +55,8 @@ class Animator final {
   void RequestFrame(bool regenerate_layer_tree = true);
 
   void Render(std::unique_ptr<flutter::LayerTree> layer_tree);
+
+  const std::weak_ptr<VsyncWaiter> GetVsyncWaiter() const;
 
   //--------------------------------------------------------------------------
   /// @brief    Schedule a secondary callback to be executed right after the
@@ -72,20 +76,12 @@ class Animator final {
   void ScheduleSecondaryVsyncCallback(uintptr_t id,
                                       const fml::closure& callback);
 
-  void Start();
-
-  void Stop();
-
-  void SetDimensionChangePending();
-
   // Enqueue |trace_flow_id| into |trace_flow_ids_|.  The flow event will be
   // ended at either the next frame, or the next vsync interval with no active
   // active rendering.
   void EnqueueTraceFlowId(uint64_t trace_flow_id);
 
  private:
-  using LayerTreePipeline = Pipeline<flutter::LayerTree>;
-
   void BeginFrame(std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder);
 
   bool CanReuseLastLayerTree();
@@ -94,8 +90,6 @@ class Animator final {
       std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder);
 
   void AwaitVSync();
-
-  const char* FrameParity();
 
   // Clear |trace_flow_ids_| if |frame_scheduled_| is false.
   void ScheduleMaybeClearTraceFlowIds();
@@ -110,13 +104,12 @@ class Animator final {
   std::shared_ptr<LayerTreePipeline> layer_tree_pipeline_;
   fml::Semaphore pending_frame_semaphore_;
   LayerTreePipeline::ProducerContinuation producer_continuation_;
-  bool paused_ = true;
   bool regenerate_layer_tree_ = false;
   bool frame_scheduled_ = false;
   int notify_idle_task_id_ = 0;
-  bool dimension_change_pending_ = false;
   SkISize last_layer_tree_size_ = {0, 0};
   std::deque<uint64_t> trace_flow_ids_;
+  bool has_rendered_ = false;
 
   fml::WeakPtrFactory<Animator> weak_factory_;
 

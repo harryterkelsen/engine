@@ -28,27 +28,26 @@ class ImageShader : public Shader {
   ~ImageShader() override;
   static fml::RefPtr<ImageShader> Create();
 
-  void initWithImage(CanvasImage* image,
-                     SkTileMode tmx,
-                     SkTileMode tmy,
-                     int filter_quality_index,
-                     const tonic::Float64List& matrix4);
+  Dart_Handle initWithImage(CanvasImage* image,
+                            SkTileMode tmx,
+                            SkTileMode tmy,
+                            int filter_quality_index,
+                            tonic::Float64List& matrix4);
 
-  sk_sp<SkShader> shader(SkSamplingOptions) override;
+  std::shared_ptr<DlColorSource> shader(DlImageSampling) override;
 
   static void RegisterNatives(tonic::DartLibraryNatives* natives);
+
+  int width();
+  int height();
 
  private:
   ImageShader();
 
   flutter::SkiaGPUObject<SkImage> sk_image_;
-  SkTileMode tmx_;
-  SkTileMode tmy_;
-  SkMatrix local_matrix_;
   bool sampling_is_locked_;
 
-  SkSamplingOptions cached_sampling_;
-  flutter::SkiaGPUObject<SkShader> cached_shader_;
+  flutter::SkiaGPUObject<DlImageColorSource> cached_shader_;
 };
 
 }  // namespace flutter

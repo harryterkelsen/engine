@@ -4,7 +4,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
@@ -15,12 +14,14 @@ import 'canvaskit/initialization.dart';
 import 'canvaskit/layer_scene_builder.dart';
 import 'canvaskit/rasterizer.dart';
 import 'clipboard.dart';
-import 'dom_renderer.dart';
+import 'dom.dart';
+import 'embedder.dart';
 import 'html/scene.dart';
 import 'mouse_cursor.dart';
 import 'platform_views/message_handler.dart';
 import 'plugins.dart';
 import 'profiler.dart';
+import 'safe_browser_api.dart';
 import 'semantics.dart';
 import 'services.dart';
 import 'text_editing/text_editing.dart';
@@ -32,7 +33,49 @@ import 'window.dart';
 /// This may be overridden in tests, for example, to pump fake frames.
 ui.VoidCallback? scheduleFrameCallback;
 
+/// Signature of functions added as a listener to high contrast changes
+typedef HighContrastListener = void Function(bool enabled);
 typedef _KeyDataResponseCallback = void Function(bool handled);
+
+
+/// Determines if high contrast is enabled using media query 'forced-colors: active' for Windows
+class HighContrastSupport {
+  static HighContrastSupport instance = HighContrastSupport();
+  static const String _highContrastMediaQueryString = '(forced-colors: active)';
+
+  final List<HighContrastListener> _listeners = <HighContrastListener>[];
+
+  /// Reference to css media query that indicates whether high contrast is on.
+  final DomMediaQueryList _highContrastMediaQuery = domWindow.matchMedia(_highContrastMediaQueryString);
+  late final DomEventListener _onHighContrastChangeListener =
+      allowInterop(_onHighContrastChange);
+
+  bool get isHighContrastEnabled => _highContrastMediaQuery.matches;
+
+  /// Adds function to the list of listeners on high contrast changes
+  void addListener(HighContrastListener listener) {
+    if (_listeners.isEmpty) {
+      _highContrastMediaQuery.addListener(_onHighContrastChangeListener);
+    }
+    _listeners.add(listener);
+  }
+
+  /// Removes function from the list of listeners on high contrast changes
+  void removeListener(HighContrastListener listener) {
+    _listeners.remove(listener);
+    if (_listeners.isEmpty) {
+      _highContrastMediaQuery.removeListener(_onHighContrastChangeListener);
+    }
+  }
+
+  void _onHighContrastChange(DomEvent event) {
+    final DomMediaQueryListEvent mqEvent = event as DomMediaQueryListEvent;
+    final bool isHighContrastEnabled = mqEvent.matches!;
+    for (final HighContrastListener listener in _listeners) {
+      listener(isHighContrastEnabled);
+    }
+  }
+}
 
 /// Platform event dispatcher.
 ///
@@ -41,20 +84,40 @@ typedef _KeyDataResponseCallback = void Function(bool handled);
 class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   /// Private constructor, since only dart:ui is supposed to create one of
   /// these.
-  EnginePlatformDispatcher._() {
+  EnginePlatformDispatcher() {
     _addBrightnessMediaQueryListener();
+    HighContrastSupport.instance.addListener(_updateHighContrast);
+    _addFontSizeObserver();
+    registerHotRestartListener(dispose);
   }
 
   /// The [EnginePlatformDispatcher] singleton.
   static EnginePlatformDispatcher get instance => _instance;
-  static final EnginePlatformDispatcher _instance =
-      EnginePlatformDispatcher._();
+  static final EnginePlatformDispatcher _instance = EnginePlatformDispatcher();
 
   /// The current platform configuration.
   @override
-  ui.PlatformConfiguration get configuration => _configuration;
-  ui.PlatformConfiguration _configuration =
-      ui.PlatformConfiguration(locales: parseBrowserLanguages());
+  ui.PlatformConfiguration configuration = ui.PlatformConfiguration(
+    locales: parseBrowserLanguages(),
+    textScaleFactor: findBrowserTextScaleFactor(),
+    accessibilityFeatures: computeAccessibilityFeatures(),
+  );
+
+  /// Compute accessibility features based on the current value of high contrast flag
+  static EngineAccessibilityFeatures computeAccessibilityFeatures() {
+    final EngineAccessibilityFeaturesBuilder builder =
+        EngineAccessibilityFeaturesBuilder(0);
+    if (HighContrastSupport.instance.isHighContrastEnabled) {
+      builder.highContrast = true;
+    }
+    return builder.build();
+  }
+
+  void dispose() {
+    _removeBrightnessMediaQueryListener();
+    _disconnectFontSizeObserver();
+    HighContrastSupport.instance.removeListener(_updateHighContrast);
+  }
 
   /// Receives all events related to platform configuration changes.
   @override
@@ -126,7 +189,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
 
   /// Returns device pixel ratio returned by browser.
   static double get browserDevicePixelRatio {
-    final double? ratio = html.window.devicePixelRatio as double?;
+    final double? ratio = domWindow.devicePixelRatio as double?;
     // Guard against WebOS returning 0 and other browsers returning null.
     return (ratio == null || ratio == 0.0) ? 1.0 : ratio;
   }
@@ -417,7 +480,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
             return;
           case 'HapticFeedback.vibrate':
             final String? type = decoded.arguments as String?;
-            domRenderer.vibrate(_getHapticFeedbackDuration(type));
+            vibrate(_getHapticFeedbackDuration(type));
             replyToPlatformMessage(callback, codec.encodeSuccessEnvelope(true));
             return;
           case 'SystemChrome.setApplicationSwitcherDescription':
@@ -425,13 +488,13 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
             // TODO(ferhat): Find more appropriate defaults? Or noop when values are null?
             final String label = arguments['label'] as String? ?? '';
             final int primaryColor = arguments['primaryColor'] as int? ?? 0xFF000000;
-            domRenderer.setTitle(label);
-            domRenderer.setThemeColor(ui.Color(primaryColor));
+            domDocument.title = label;
+            setThemeColor(ui.Color(primaryColor));
             replyToPlatformMessage(callback, codec.encodeSuccessEnvelope(true));
             return;
           case 'SystemChrome.setPreferredOrientations':
             final List<dynamic> arguments = decoded.arguments as List<dynamic>;
-            domRenderer.setPreferredOrientation(arguments).then((bool success) {
+            flutterViewEmbedder.setPreferredOrientation(arguments).then((bool success) {
               replyToPlatformMessage(
                   callback, codec.encodeSuccessEnvelope(success));
             });
@@ -451,7 +514,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
 
       // Dispatched by the bindings to delay service worker initialization.
       case 'flutter/service_worker':
-        html.window.dispatchEvent(html.Event('flutter-first-frame'));
+        domWindow.dispatchEvent(createDomEvent('Event', 'flutter-first-frame'));
         return;
 
       case 'flutter/textinput':
@@ -479,8 +542,8 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
       case 'flutter/platform_views':
         _platformViewMessageHandler ??= PlatformViewMessageHandler(
           contentManager: platformViewManager,
-          contentHandler: (html.Element content) {
-            domRenderer.glassPaneElement!.append(content);
+          contentHandler: (DomElement content) {
+            flutterViewEmbedder.glassPaneElement!.append(content);
           },
         );
         _platformViewMessageHandler!.handlePlatformViewCall(data, callback!);
@@ -527,17 +590,23 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   }
 
   int _getHapticFeedbackDuration(String? type) {
+    const int vibrateLongPress = 50;
+    const int vibrateLightImpact = 10;
+    const int vibrateMediumImpact = 20;
+    const int vibrateHeavyImpact = 30;
+    const int vibrateSelectionClick = 10;
+
     switch (type) {
       case 'HapticFeedbackType.lightImpact':
-        return DomRenderer.vibrateLightImpact;
+        return vibrateLightImpact;
       case 'HapticFeedbackType.mediumImpact':
-        return DomRenderer.vibrateMediumImpact;
+        return vibrateMediumImpact;
       case 'HapticFeedbackType.heavyImpact':
-        return DomRenderer.vibrateHeavyImpact;
+        return vibrateHeavyImpact;
       case 'HapticFeedbackType.selectionClick':
-        return DomRenderer.vibrateSelectionClick;
+        return vibrateSelectionClick;
       default:
-        return DomRenderer.vibrateLongPress;
+        return vibrateLongPress;
     }
   }
 
@@ -597,7 +666,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
       rasterizer!.draw(layerScene.layerTree);
     } else {
       final SurfaceScene surfaceScene = scene as SurfaceScene;
-      domRenderer.renderScene(surfaceScene.webOnlyRootElement);
+      flutterViewEmbedder.addSceneToSceneHost(surfaceScene.webOnlyRootElement);
     }
     frameTimingsOnRasterFinish();
   }
@@ -715,17 +784,17 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   /// The empty list is not a valid value for locales. This is only used for
   /// testing locale update logic.
   void debugResetLocales() {
-    _configuration = _configuration.copyWith(locales: const <ui.Locale>[]);
+    configuration = configuration.copyWith(locales: const <ui.Locale>[]);
   }
 
-  // Called by DomRenderer when browser languages change.
+  // Called by FlutterViewEmbedder when browser languages change.
   void updateLocales() {
-    _configuration = _configuration.copyWith(locales: parseBrowserLanguages());
+    configuration = configuration.copyWith(locales: parseBrowserLanguages());
   }
 
   static List<ui.Locale> parseBrowserLanguages() {
     // TODO(yjbanov): find a solution for IE
-    final List<String>? languages = html.window.navigator.languages;
+    final List<String>? languages = domWindow.navigator.languages;
     if (languages == null || languages.isEmpty) {
       // To make it easier for the app code, let's not leave the locales list
       // empty. This way there's fewer corner cases for apps to handle.
@@ -774,6 +843,51 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   @override
   bool get alwaysUse24HourFormat => configuration.alwaysUse24HourFormat;
 
+  /// Updates [textScaleFactor] and invokes [onTextScaleFactorChanged] and
+  /// [onPlatformConfigurationChanged] callbacks if [textScaleFactor] changed.
+  void _updateTextScaleFactor(double value) {
+    if (configuration.textScaleFactor != value) {
+      configuration = configuration.copyWith(textScaleFactor: value);
+      invokeOnPlatformConfigurationChanged();
+      invokeOnTextScaleFactorChanged();
+    }
+  }
+
+  /// Watches for font-size changes in the browser's <html> element to
+  /// recalculate [textScaleFactor].
+  ///
+  /// Updates [textScaleFactor] with the new value.
+  DomMutationObserver? _fontSizeObserver;
+
+  /// Set the callback function for updating [textScaleFactor] based on
+  /// font-size changes in the browser's <html> element.
+  void _addFontSizeObserver() {
+    const String styleAttribute = 'style';
+
+    _fontSizeObserver = createDomMutationObserver(allowInterop(
+        (List<dynamic> mutations, DomMutationObserver _) {
+      for (final dynamic mutation in mutations) {
+        final DomMutationRecord record = mutation as DomMutationRecord;
+        if (record.type == 'attributes' &&
+            record.attributeName == styleAttribute) {
+          final double newTextScaleFactor = findBrowserTextScaleFactor();
+          _updateTextScaleFactor(newTextScaleFactor);
+        }
+      }
+    }));
+    _fontSizeObserver!.observe(
+      domDocument.documentElement!,
+      attributes: true,
+      attributeFilter: <String>[styleAttribute],
+    );
+  }
+
+  /// Remove the observer for font-size changes in the browser's <html> element.
+  void _disconnectFontSizeObserver() {
+    _fontSizeObserver?.disconnect();
+    _fontSizeObserver = null;
+  }
+
   /// A callback that is invoked whenever [textScaleFactor] changes value.
   ///
   /// The framework invokes this callback in the same zone in which the
@@ -801,7 +915,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
 
   void updateSemanticsEnabled(bool semanticsEnabled) {
     if (semanticsEnabled != this.semanticsEnabled) {
-      _configuration = _configuration.copyWith(semanticsEnabled: semanticsEnabled);
+      configuration = configuration.copyWith(semanticsEnabled: semanticsEnabled);
       if (_onSemanticsEnabledChanged != null) {
         invokeOnSemanticsEnabledChanged();
       }
@@ -817,20 +931,36 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   /// callback if [_platformBrightness] changed.
   void _updatePlatformBrightness(ui.Brightness value) {
     if (configuration.platformBrightness != value) {
-      _configuration = configuration.copyWith(platformBrightness: value);
+      configuration = configuration.copyWith(platformBrightness: value);
       invokeOnPlatformConfigurationChanged();
       invokeOnPlatformBrightnessChanged();
     }
   }
 
+  /// The setting indicating the current system font of the host platform.
+  @override
+  String? get systemFontFamily => configuration.systemFontFamily;
+
+  /// Updates [_highContrast] and invokes [onHighContrastModeChanged]
+  /// callback if [_highContrast] changed.
+  void _updateHighContrast(bool value) {
+    if (configuration.accessibilityFeatures.highContrast != value) {
+      final EngineAccessibilityFeatures original =
+          configuration.accessibilityFeatures as EngineAccessibilityFeatures;
+      configuration = configuration.copyWith(
+          accessibilityFeatures: original.copyWith(highContrast: value));
+      invokeOnPlatformConfigurationChanged();
+    }
+  }
+
   /// Reference to css media query that indicates the user theme preference on the web.
-  final html.MediaQueryList _brightnessMediaQuery =
-      html.window.matchMedia('(prefers-color-scheme: dark)');
+  final DomMediaQueryList _brightnessMediaQuery =
+      domWindow.matchMedia('(prefers-color-scheme: dark)');
 
   /// A callback that is invoked whenever [_brightnessMediaQuery] changes value.
   ///
   /// Updates the [_platformBrightness] with the new user preference.
-  html.EventListener? _brightnessMediaQueryListener;
+  DomEventListener? _brightnessMediaQueryListener;
 
   /// Set the callback function for listening changes in [_brightnessMediaQuery] value.
   void _addBrightnessMediaQueryListener() {
@@ -838,16 +968,13 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
         ? ui.Brightness.dark
         : ui.Brightness.light);
 
-    _brightnessMediaQueryListener = (html.Event event) {
-      final html.MediaQueryListEvent mqEvent =
-          event as html.MediaQueryListEvent;
+    _brightnessMediaQueryListener = allowInterop((DomEvent event) {
+      final DomMediaQueryListEvent mqEvent =
+          event as DomMediaQueryListEvent;
       _updatePlatformBrightness(
           mqEvent.matches! ? ui.Brightness.dark : ui.Brightness.light);
-    };
-    _brightnessMediaQuery.addListener(_brightnessMediaQueryListener);
-    registerHotRestartListener(() {
-      _removeBrightnessMediaQueryListener();
     });
+    _brightnessMediaQuery.addListener(_brightnessMediaQueryListener);
   }
 
   /// Remove the callback function for listening changes in [_brightnessMediaQuery] value.
@@ -880,6 +1007,32 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   /// Otherwise zones won't work properly.
   void invokeOnPlatformBrightnessChanged() {
     invoke(_onPlatformBrightnessChanged, _onPlatformBrightnessChangedZone);
+  }
+
+  /// A callback that is invoked whenever [systemFontFamily] changes value.
+  ///
+  /// The framework invokes this callback in the same zone in which the
+  /// callback was set.
+  ///
+  /// See also:
+  ///
+  ///  * [WidgetsBindingObserver], for a mechanism at the widgets layer to
+  ///    observe when this callback is invoked.
+  @override
+  ui.VoidCallback? get onSystemFontFamilyChanged =>
+      _onSystemFontFamilyChanged;
+  ui.VoidCallback? _onSystemFontFamilyChanged;
+  Zone? _onSystemFontFamilyChangedZone;
+  @override
+  set onSystemFontFamilyChanged(ui.VoidCallback? callback) {
+    _onSystemFontFamilyChanged = callback;
+    _onSystemFontFamilyChangedZone = Zone.current;
+  }
+
+  /// Engine code should use this method instead of the callback directly.
+  /// Otherwise zones won't work properly.
+  void invokeOnSystemFontFamilyChanged() {
+    invoke(_onSystemFontFamilyChanged, _onSystemFontFamilyChangedZone);
   }
 
   /// Whether the user has requested that [updateSemantics] be called when
@@ -936,6 +1089,19 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
         _onSemanticsAction, _onSemanticsActionZone, id, action, args);
   }
 
+  // TODO(dnfield): make this work on web.
+  // https://github.com/flutter/flutter/issues/100277
+  ui.ErrorCallback? _onError;
+  // ignore: unused_field
+  Zone? _onErrorZone;
+  @override
+  ui.ErrorCallback? get onError => _onError;
+  @override
+  set onError(ui.ErrorCallback? callback) {
+    _onError = callback;
+    _onErrorZone = Zone.current;
+  }
+
   /// The route or path that the embedder requested when the application was
   /// launched.
   ///
@@ -975,7 +1141,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   /// Lazily initialized when the `defaultRouteName` getter is invoked.
   ///
   /// The reason for the lazy initialization is to give enough time for the app
-  /// to set [locationStrategy] in `lib/src/ui/initialization.dart`.
+  /// to set [locationStrategy] in `lib/initialization.dart`.
   String? _defaultRouteName;
 
   @visibleForTesting
@@ -1075,4 +1241,13 @@ void invoke3<A1, A2, A3>(void Function(A1 a1, A2 a2, A3 a3)? callback,
       callback(arg1, arg2, arg3);
     });
   }
+}
+
+const double _defaultRootFontSize = 16.0;
+
+/// Finds the text scale factor of the browser by looking at the computed style
+/// of the browser's <html> element.
+double findBrowserTextScaleFactor() {
+  final num fontSize = parseFontSize(domDocument.documentElement!) ?? _defaultRootFontSize;
+  return fontSize / _defaultRootFontSize;
 }

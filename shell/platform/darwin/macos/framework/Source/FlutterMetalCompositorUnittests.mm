@@ -11,10 +11,11 @@
 namespace flutter::testing {
 
 TEST(FlutterMetalCompositorTest, TestPresent) {
-  id mockViewController = CreateMockViewController(nil);
+  id mockViewController = CreateMockViewController();
 
   std::unique_ptr<flutter::FlutterMetalCompositor> macos_compositor =
-      std::make_unique<FlutterMetalCompositor>(mockViewController, nullptr);
+      std::make_unique<FlutterMetalCompositor>(
+          mockViewController, /*platform_view_controller*/ nullptr, /*mtl_device*/ nullptr);
 
   bool flag = false;
   macos_compositor->SetPresentCallback([f = &flag](bool has_flutter_content) {
@@ -27,11 +28,12 @@ TEST(FlutterMetalCompositorTest, TestPresent) {
 }
 
 TEST(FlutterMetalCompositorTest, TestCreate) {
-  id mockViewController = CreateMockViewController(nil);
+  id mockViewController = CreateMockViewController();
   [mockViewController loadView];
 
   std::unique_ptr<flutter::FlutterMetalCompositor> macos_compositor =
-      std::make_unique<FlutterMetalCompositor>(mockViewController, nullptr);
+      std::make_unique<FlutterMetalCompositor>(
+          mockViewController, /*platform_view_controller*/ nullptr, /*mtl_device*/ nullptr);
 
   FlutterBackingStore backing_store;
   FlutterBackingStoreConfig config;
@@ -48,11 +50,12 @@ TEST(FlutterMetalCompositorTest, TestCreate) {
 }
 
 TEST(FlutterMetalCompositorTest, TestCompositing) {
-  id mockViewController = CreateMockViewController(nil);
+  id mockViewController = CreateMockViewController();
   [mockViewController loadView];
 
   std::unique_ptr<flutter::FlutterMetalCompositor> macos_compositor =
-      std::make_unique<FlutterMetalCompositor>(mockViewController, nullptr);
+      std::make_unique<FlutterMetalCompositor>(
+          mockViewController, /*platform_view_controller*/ nullptr, /*mtl_device*/ nullptr);
 
   FlutterBackingStore backing_store;
   FlutterBackingStoreConfig config;
@@ -68,4 +71,4 @@ TEST(FlutterMetalCompositorTest, TestCompositing) {
   ASSERT_EQ(texture.height, 600u);
 }
 
-}  // flutter::testing
+}  // namespace flutter::testing

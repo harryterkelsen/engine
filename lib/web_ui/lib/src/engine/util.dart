@@ -2,15 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+library util;
+
 import 'dart:async';
-import 'dart:html' as html;
-import 'dart:js_util' as js_util;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ui/ui.dart' as ui;
 
 import 'browser_detection.dart';
+import 'dom.dart';
+import 'safe_browser_api.dart';
 import 'vector_math.dart';
 
 /// Generic callback signature, used by [_futurize].
@@ -36,22 +38,32 @@ typedef Callbacker<T> = String? Function(Callback<T> callback);
 /// typedef IntCallback = void Function(int result);
 ///
 /// String _doSomethingAndCallback(IntCallback callback) {
-///   new Timer(new Duration(seconds: 1), () { callback(1); });
+///   Timer(const Duration(seconds: 1), () { callback(1); });
 /// }
 ///
 /// Future<int> doSomething() {
-///   return _futurize(_doSomethingAndCallback);
+///   return futurize(_doSomethingAndCallback);
 /// }
 /// ```
+// Keep this in sync with _futurize in lib/ui/fixtures/ui_test.dart.
 Future<T> futurize<T>(Callbacker<T> callbacker) {
   final Completer<T> completer = Completer<T>.sync();
-  final String? error = callbacker((T t) {
+  // If the callback synchronously throws an error, then synchronously
+  // rethrow that error instead of adding it to the completer. This
+  // prevents the Zone from receiving an uncaught exception.
+  bool sync = true;
+  final String? error = callbacker((T? t) {
     if (t == null) {
-      completer.completeError(Exception('operation failed'));
+      if (sync) {
+        throw Exception('operation failed');
+      } else {
+        completer.completeError(Exception('operation failed'));
+      }
     } else {
       completer.complete(t);
     }
   });
+  sync = false;
   if (error != null) {
     throw Exception(error);
   }
@@ -66,7 +78,7 @@ String matrix4ToCssTransform(Matrix4 matrix) {
 /// Applies a transform to the [element].
 ///
 /// See [float64ListToCssTransform] for details on how the CSS value is chosen.
-void setElementTransform(html.Element element, Float32List matrix4) {
+void setElementTransform(DomElement element, Float32List matrix4) {
   element.style
     ..transformOrigin = '0 0 0'
     ..transform = float64ListToCssTransform(matrix4);
@@ -391,7 +403,7 @@ String colorComponentsToCssString(int r, int g, int b, int a) {
 /// Firefox exception without interfering with others (potentially useful
 /// for the programmer).
 bool isNsErrorFailureException(Object e) {
-  return js_util.getProperty(e, 'name') == 'NS_ERROR_FAILURE';
+  return getJsProperty<dynamic>(e, 'name') == 'NS_ERROR_FAILURE';
 }
 
 /// From: https://developer.mozilla.org/en-US/docs/Web/CSS/font-family#Syntax
@@ -422,8 +434,20 @@ const Set<String> _genericFontFamilies = <String>{
 ///
 /// For iOS, default to -apple-system, where it should be available, otherwise
 /// default to Arial. BlinkMacSystemFont is used for Chrome on iOS.
-final String _fallbackFontFamily =
-    isMacOrIOS ? '-apple-system, BlinkMacSystemFont' : 'Arial';
+String get _fallbackFontFamily {
+  if (isIOS15) {
+    // Remove the "-apple-system" fallback font because it causes a crash in
+    // iOS 15.
+    //
+    // See github issue: https://github.com/flutter/flutter/issues/90705
+    // See webkit bug: https://bugs.webkit.org/show_bug.cgi?id=231686
+    return 'BlinkMacSystemFont';
+  }
+  if (isMacOrIOS) {
+    return '-apple-system, BlinkMacSystemFont';
+  }
+  return 'Arial';
+}
 
 /// Create a font-family string appropriate for CSS.
 ///
@@ -469,28 +493,10 @@ Float32List offsetListToFloat32List(List<ui.Offset> offsetList) {
 ///
 /// * Use 3D transform instead of 2D: this does not work because it causes text
 ///   blurriness: https://github.com/flutter/flutter/issues/32274
-void applyWebkitClipFix(html.Element? containerElement) {
+void applyWebkitClipFix(DomElement? containerElement) {
   if (browserEngine == BrowserEngine.webkit) {
     containerElement!.style.zIndex = '0';
   }
-}
-
-// Stores matrix in a form that allows zero allocation transforms.
-class FastMatrix32 {
-  final Float32List matrix;
-  double transformedX = 0, transformedY = 0;
-  FastMatrix32(this.matrix);
-
-  void transform(double x, double y) {
-    transformedX = matrix[12] + (matrix[0] * x) + (matrix[4] * y);
-    transformedY = matrix[13] + (matrix[1] * x) + (matrix[5] * y);
-  }
-
-  String debugToString() =>
-      '${matrix[0].toStringAsFixed(3)}, ${matrix[4].toStringAsFixed(3)}, ${matrix[8].toStringAsFixed(3)}, ${matrix[12].toStringAsFixed(3)}\n'
-      '${matrix[1].toStringAsFixed(3)}, ${matrix[5].toStringAsFixed(3)}, ${matrix[9].toStringAsFixed(3)}, ${matrix[13].toStringAsFixed(3)}\n'
-      '${matrix[2].toStringAsFixed(3)}, ${matrix[6].toStringAsFixed(3)}, ${matrix[10].toStringAsFixed(3)}, ${matrix[14].toStringAsFixed(3)}\n'
-      '${matrix[3].toStringAsFixed(3)}, ${matrix[7].toStringAsFixed(3)}, ${matrix[11].toStringAsFixed(3)}, ${matrix[15].toStringAsFixed(3)}\n';
 }
 
 /// Roughly the inverse of [ui.Shadow.convertRadiusToSigma].
@@ -500,16 +506,6 @@ class FastMatrix32 {
 /// Flutter mobile.
 double convertSigmaToRadius(double sigma) {
   return sigma * 2.0;
-}
-
-/// Used to check for null values that are non-nullable.
-///
-/// This is useful when some external API (e.g. HTML DOM) disagrees with
-/// Dart type declarations (e.g. `dart:html`). Where `dart:html` may believe
-/// something to be non-null, it may actually be null (e.g. old browsers do
-/// not implement a feature, such as clipboard).
-bool isUnsoundNull(dynamic object) {
-  return object == null;
 }
 
 int clampInt(int value, int min, int max) {
@@ -527,7 +523,7 @@ int clampInt(int value, int min, int max) {
 ///
 /// This function can be overridden in tests. This could be useful, for example,
 /// to verify that warnings are printed under certain circumstances.
-void Function(String) printWarning = html.window.console.warn;
+void Function(String) printWarning = domWindow.console.warn;
 
 /// Determines if lists [a] and [b] are deep equivalent.
 ///
@@ -561,10 +557,10 @@ bool unsafeIsNull(dynamic object) {
   return object == null;
 }
 
-/// A typed variant of [html.Window.fetch].
-Future<html.Body> httpFetch(String url) async {
-  final dynamic result = await html.window.fetch(url);
-  return result as html.Body;
+/// A typed variant of [domWindow.fetch].
+Future<DomResponse> httpFetch(String url) async {
+  final Object? result = await domWindow.fetch(url);
+  return result! as DomResponse;
 }
 
 /// Extensions to [Map] that make it easier to treat it as a JSON object. The
@@ -638,5 +634,107 @@ extension JsonExtensions on Map<dynamic, dynamic> {
 
   double? tryDouble(String propertyName) {
     return this[propertyName] as double?;
+  }
+}
+
+/// Prints a list of bytes in hex format.
+///
+/// Bytes are separated by one space and are padded on the left to always show
+/// two digits.
+///
+/// Example:
+///
+///     Input: [0, 1, 2, 3]
+///     Output: 0x00 0x01 0x02 0x03
+String bytesToHexString(List<int> data) {
+  return data.map((int byte) => '0x' + byte.toRadixString(16).padLeft(2, '0')).join(' ');
+}
+
+/// Sets a style property on [element].
+///
+/// [name] is the name of the property. [value] is the value of the property.
+/// If [value] is null, removes the style property.
+void setElementStyle(
+    DomElement element, String name, String? value) {
+  if (value == null) {
+    element.style.removeProperty(name);
+  } else {
+    element.style.setProperty(name, value);
+  }
+}
+
+void setClipPath(DomElement element, String? value) {
+  if (browserEngine == BrowserEngine.webkit) {
+    if (value == null) {
+      element.style.removeProperty('-webkit-clip-path');
+    } else {
+      element.style.setProperty('-webkit-clip-path', value);
+    }
+  }
+  if (value == null) {
+    element.style.removeProperty('clip-path');
+  } else {
+    element.style.setProperty('clip-path', value);
+  }
+}
+
+void setThemeColor(ui.Color color) {
+  DomHTMLMetaElement? theme =
+      domDocument.querySelector('#flutterweb-theme') as DomHTMLMetaElement?;
+  if (theme == null) {
+    theme = createDomHTMLMetaElement()
+      ..id = 'flutterweb-theme'
+      ..name = 'theme-color';
+    domDocument.head!.append(theme);
+  }
+  theme.content = colorToCssString(color)!;
+}
+
+bool? _ellipseFeatureDetected;
+
+/// Draws CanvasElement ellipse with fallback.
+void drawEllipse(
+    DomCanvasRenderingContext2D context,
+    double centerX,
+    double centerY,
+    double radiusX,
+    double radiusY,
+    double rotation,
+    double startAngle,
+    double endAngle,
+    bool antiClockwise) {
+  _ellipseFeatureDetected ??= getJsProperty<Object?>(context, 'ellipse') != null;
+  if (_ellipseFeatureDetected!) {
+    context.ellipse(centerX, centerY, radiusX, radiusY, rotation, startAngle,
+        endAngle, antiClockwise);
+  } else {
+    context.save();
+    context.translate(centerX, centerY);
+    context.rotate(rotation);
+    context.scale(radiusX, radiusY);
+    context.arc(0, 0, 1, startAngle, endAngle, antiClockwise);
+    context.restore();
+  }
+}
+
+/// Removes all children of a DOM node.
+void removeAllChildren(DomNode node) {
+  while (node.lastChild != null) {
+    node.lastChild!.remove();
+  }
+}
+
+/// A helper that finds an element in an iterable that satisfy a predicate, or
+/// returns null otherwise.
+///
+/// This is mostly useful for iterables containing non-null elements.
+extension FirstWhereOrNull<T> on Iterable<T> {
+  T? firstWhereOrNull(bool Function(T element) test) {
+    for (final T element in this) {
+      if (test(element)) {
+        return element;
+      }
+    }
+    return null;
   }
 }

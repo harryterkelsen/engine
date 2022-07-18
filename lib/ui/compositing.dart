@@ -21,6 +21,23 @@ class Scene extends NativeFieldWrapperClass1 {
   @pragma('vm:entry-point')
   Scene._();
 
+  /// Synchronously creates a handle to an image from this scene.
+  ///
+  /// {@macro dart.ui.painting.Picture.toImageSync}
+  Image toImageSync(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      throw Exception('Invalid image dimensions.');
+    }
+
+    final _Image image = _Image._();
+    final String? result =  _toImageSync(width, height, image);
+    if (result != null) {
+      throw PictureRasterizationException._(result);
+    }
+    return Image._(image, image.width, image.height);
+  }
+  String? _toImageSync(int width, int height, _Image outImage) native 'Scene_toImageSync';
+
   /// Creates a raster image representation of the current state of the scene.
   /// This is a slow operation that is performed on a background thread.
   ///
@@ -35,7 +52,7 @@ class Scene extends NativeFieldWrapperClass1 {
         if (image == null) {
           callback(null);
         } else {
-          callback(Image._(image));
+          callback(Image._(image, image.width, image.height));
         }
       }),
     );
@@ -383,7 +400,7 @@ class SceneBuilder extends NativeFieldWrapperClass1 {
     assert(clipBehavior != Clip.none);
     assert(_debugCheckCanBeUsedAsOldLayer(oldLayer, 'pushClipRRect'));
     final EngineLayer engineLayer = EngineLayer._();
-    _pushClipRRect(engineLayer, rrect._value32, clipBehavior.index, oldLayer?._nativeLayer);
+    _pushClipRRect(engineLayer, rrect._getValue32(), clipBehavior.index, oldLayer?._nativeLayer);
     final ClipRRectEngineLayer layer = ClipRRectEngineLayer._(engineLayer);
     assert(_debugPushLayer(layer));
     return layer;
@@ -718,6 +735,7 @@ class SceneBuilder extends NativeFieldWrapperClass1 {
     bool isComplexHint = false,
     bool willChangeHint = false,
   }) {
+    assert(!picture.debugDisposed);
     final int hints = (isComplexHint ? 1 : 0) | (willChangeHint ? 2 : 0);
     _addPicture(offset.dx, offset.dy, picture, hints);
   }

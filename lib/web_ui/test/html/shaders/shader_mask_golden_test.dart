@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
-
 import 'package:test/bootstrap/browser.dart';
 import 'package:test/test.dart';
 import 'package:ui/src/engine.dart'
@@ -11,8 +9,6 @@ import 'package:ui/src/engine.dart'
 import 'package:ui/ui.dart';
 
 import 'package:web_engine_tester/golden_tester.dart';
-
-import '../../common.dart';
 
 /// To debug compositing failures on browsers, set this flag to true and run
 /// flutter run -d chrome --web-renderer=html
@@ -33,17 +29,20 @@ Future<void> main() async {
 // https://github.com/flutter/flutter/issues/86623
 
 Future<void> testMain() async {
-  setUp(() async {
+  setUpAll(() async {
     debugShowClipLayers = true;
+    await webOnlyInitializePlatform();
+  });
+
+  setUp(() async {
     SurfaceSceneBuilder.debugForgetFrameScene();
-    for (final html.Node scene in
-        domRenderer.sceneHostElement!.querySelectorAll('flt-scene')) {
+    for (final DomNode scene in
+        flutterViewEmbedder.sceneHostElement!.querySelectorAll('flt-scene').cast<DomNode>()) {
       scene.remove();
     }
     initWebGl();
-    await webOnlyInitializePlatform();
-    webOnlyFontCollection.debugRegisterTestFonts();
-    await webOnlyFontCollection.ensureFontsLoaded();
+    fontCollection.debugRegisterTestFonts();
+    await fontCollection.ensureFontsLoaded();
   });
 
   /// Should render the picture unmodified.
@@ -162,7 +161,7 @@ void _renderCirclesScene(BlendMode blendMode) {
   builder.addPicture(Offset.zero, circles2);
   builder.pop();
 
-  domRenderer.sceneHostElement!.append(builder.build().webOnlyRootElement!);
+  flutterViewEmbedder.sceneHostElement!.append(builder.build().webOnlyRootElement!);
 }
 
 Picture _drawTestPictureWithText(
@@ -218,5 +217,5 @@ void _renderTextScene(BlendMode blendMode) {
   builder.addPicture(Offset.zero, textPicture2);
   builder.pop();
 
-  domRenderer.sceneHostElement!.append(builder.build().webOnlyRootElement!);
+  flutterViewEmbedder.sceneHostElement!.append(builder.build().webOnlyRootElement!);
 }

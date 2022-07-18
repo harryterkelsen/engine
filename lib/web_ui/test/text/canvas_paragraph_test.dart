@@ -29,7 +29,7 @@ void main() {
 }
 
 Future<void> testMain() async {
-  await ui.webOnlyInitializeTestDomRenderer();
+  await initializeTestFlutterViewEmbedder();
 
   group('$CanvasParagraph.getBoxesForRange', () {
     test('return empty list for invalid ranges', () {
@@ -395,32 +395,32 @@ Future<void> testMain() async {
       // we want to make sure that the "B" box is also popped.
       paragraph.layout(constrain(60));
 
-      final EngineLineMetrics firstLine = paragraph.computeLineMetrics()[0];
-      final EngineLineMetrics secondLine = paragraph.computeLineMetrics()[1];
+      final ParagraphLine firstLine = paragraph.lines[0];
+      final ParagraphLine secondLine = paragraph.lines[1];
 
       // There should be no "B" in the first line's boxes.
       expect(firstLine.boxes, hasLength(2));
 
-      expect((firstLine.boxes![0] as SpanBox).toText(), 'AAA');
-      expect((firstLine.boxes![0] as SpanBox).left, 0.0);
+      expect((firstLine.boxes[0] as SpanBox).toText(), 'AAA');
+      expect((firstLine.boxes[0] as SpanBox).left, 0.0);
 
-      expect((firstLine.boxes![1] as SpanBox).toText(), ' ');
-      expect((firstLine.boxes![1] as SpanBox).left, 30.0);
+      expect((firstLine.boxes[1] as SpanBox).toText(), ' ');
+      expect((firstLine.boxes[1] as SpanBox).left, 30.0);
 
       // Make sure the second line isn't missing any boxes.
       expect(secondLine.boxes, hasLength(4));
 
-      expect((secondLine.boxes![0] as SpanBox).toText(), 'B');
-      expect((secondLine.boxes![0] as SpanBox).left, 0.0);
+      expect((secondLine.boxes[0] as SpanBox).toText(), 'B');
+      expect((secondLine.boxes[0] as SpanBox).left, 0.0);
 
-      expect((secondLine.boxes![1] as SpanBox).toText(), '_C');
-      expect((secondLine.boxes![1] as SpanBox).left, 10.0);
+      expect((secondLine.boxes[1] as SpanBox).toText(), '_C');
+      expect((secondLine.boxes[1] as SpanBox).left, 10.0);
 
-      expect((secondLine.boxes![2] as SpanBox).toText(), ' ');
-      expect((secondLine.boxes![2] as SpanBox).left, 30.0);
+      expect((secondLine.boxes[2] as SpanBox).toText(), ' ');
+      expect((secondLine.boxes[2] as SpanBox).left, 30.0);
 
-      expect((secondLine.boxes![3] as SpanBox).toText(), 'DD');
-      expect((secondLine.boxes![3] as SpanBox).left, 40.0);
+      expect((secondLine.boxes[3] as SpanBox).toText(), 'DD');
+      expect((secondLine.boxes[3] as SpanBox).left, 40.0);
     });
   });
 

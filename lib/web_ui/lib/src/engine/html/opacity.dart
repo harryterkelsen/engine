@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
-
 import 'package:ui/ui.dart' as ui;
 
-import '../dom_renderer.dart';
+import '../dom.dart';
+import '../util.dart';
 import '../vector_math.dart';
 import 'surface.dart';
 
@@ -42,18 +41,18 @@ class PersistedOpacity extends PersistedContainerSurface
       Matrix4.translationValues(-offset.dx, -offset.dy, 0);
 
   @override
-  html.Element createElement() {
-    final html.Element element = domRenderer.createElement('flt-opacity');
-    DomRenderer.setElementStyle(element, 'position', 'absolute');
-    DomRenderer.setElementStyle(element, 'transform-origin', '0 0 0');
+  DomElement createElement() {
+    final DomElement element = domDocument.createElement('flt-opacity');
+    setElementStyle(element, 'position', 'absolute');
+    setElementStyle(element, 'transform-origin', '0 0 0');
     return element;
   }
 
   @override
   void apply() {
-    final html.Element element = rootElement!;
-    DomRenderer.setElementStyle(element, 'opacity', '${alpha / 255}');
-    DomRenderer.setElementTransform(element, 'translate(${offset.dx}px, ${offset.dy}px)');
+    final DomElement element = rootElement!;
+    setElementStyle(element, 'opacity', '${alpha / 255}');
+    element.style.transform = 'translate(${offset.dx}px, ${offset.dy}px)';
   }
 
   @override

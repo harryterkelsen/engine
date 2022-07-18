@@ -90,13 +90,13 @@ namespace {
 class FlutterPlatformViewsTestMockPlatformViewDelegate : public PlatformView::Delegate {
   void OnPlatformViewCreated(std::unique_ptr<Surface> surface) override {}
   void OnPlatformViewDestroyed() override {}
+  void OnPlatformViewScheduleFrame() override {}
   void OnPlatformViewSetNextFrameCallback(const fml::closure& closure) override {}
   void OnPlatformViewSetViewportMetrics(const ViewportMetrics& metrics) override {}
+  const flutter::Settings& OnPlatformViewGetSettings() const override { return settings_; }
   void OnPlatformViewDispatchPlatformMessage(std::unique_ptr<PlatformMessage> message) override {}
   void OnPlatformViewDispatchPointerDataPacket(std::unique_ptr<PointerDataPacket> packet) override {
   }
-  void OnPlatformViewDispatchKeyDataPacket(std::unique_ptr<KeyDataPacket> packet,
-                                           std::function<void(bool)> callback) override {}
   void OnPlatformViewDispatchSemanticsAction(int32_t id,
                                              SemanticsAction action,
                                              fml::MallocMapping args) override {}
@@ -115,6 +115,9 @@ class FlutterPlatformViewsTestMockPlatformViewDelegate : public PlatformView::De
                                     bool transient) override {}
   void UpdateAssetResolverByType(std::unique_ptr<flutter::AssetResolver> updated_asset_resolver,
                                  flutter::AssetResolver::AssetResolverType type) override {}
+
+ private:
+  flutter::Settings settings_;
 };
 
 }  // namespace
@@ -965,8 +968,9 @@ fml::RefPtr<fml::TaskRunner> CreateNewThread(std::string name) {
 
   flutterPlatformViewsController->PrerollCompositeEmbeddedView(2, std::move(embeddedViewParams_1));
   flutterPlatformViewsController->CompositeEmbeddedView(2);
+  flutter::SurfaceFrame::FramebufferInfo framebuffer_info;
   auto mock_surface = std::make_unique<flutter::SurfaceFrame>(
-      nullptr, true,
+      nullptr, framebuffer_info,
       [](const flutter::SurfaceFrame& surface_frame, SkCanvas* canvas) { return false; });
   XCTAssertFalse(
       flutterPlatformViewsController->SubmitFrame(nullptr, nullptr, std::move(mock_surface)));
@@ -975,11 +979,11 @@ fml::RefPtr<fml::TaskRunner> CreateNewThread(std::string name) {
       std::make_unique<flutter::EmbeddedViewParams>(finalMatrix, SkSize::Make(300, 300), stack);
   flutterPlatformViewsController->PrerollCompositeEmbeddedView(2, std::move(embeddedViewParams_2));
   flutterPlatformViewsController->CompositeEmbeddedView(2);
-  auto mock_surface_submit_false = std::make_unique<flutter::SurfaceFrame>(
-      nullptr, true,
+  auto mock_surface_submit_true = std::make_unique<flutter::SurfaceFrame>(
+      nullptr, framebuffer_info,
       [](const flutter::SurfaceFrame& surface_frame, SkCanvas* canvas) { return true; });
   XCTAssertTrue(flutterPlatformViewsController->SubmitFrame(nullptr, nullptr,
-                                                            std::move(mock_surface_submit_false)));
+                                                            std::move(mock_surface_submit_true)));
 }
 
 - (void)
@@ -1084,6 +1088,67 @@ fml::RefPtr<fml::TaskRunner> CreateNewThread(std::string name) {
   XCTAssertEqual(flutterPlatformViewsController->GetCurrentCanvases().size(), 1UL);
 }
 
+- (void)testThreadMergeAtEndFrame {
+  flutter::FlutterPlatformViewsTestMockPlatformViewDelegate mock_delegate;
+  auto thread_task_runner_platform = CreateNewThread("FlutterPlatformViewsTest1");
+  auto thread_task_runner_other = CreateNewThread("FlutterPlatformViewsTest2");
+  flutter::TaskRunners runners(/*label=*/self.name.UTF8String,
+                               /*platform=*/thread_task_runner_platform,
+                               /*raster=*/thread_task_runner_other,
+                               /*ui=*/thread_task_runner_other,
+                               /*io=*/thread_task_runner_other);
+  auto flutterPlatformViewsController = std::make_shared<flutter::FlutterPlatformViewsController>();
+  auto platform_view = std::make_unique<flutter::PlatformViewIOS>(
+      /*delegate=*/mock_delegate,
+      /*rendering_api=*/flutter::IOSRenderingAPI::kSoftware,
+      /*platform_views_controller=*/flutterPlatformViewsController,
+      /*task_runners=*/runners);
+
+  UIView* mockFlutterView = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 500, 500)] autorelease];
+  flutterPlatformViewsController->SetFlutterView(mockFlutterView);
+
+  FlutterPlatformViewsTestMockFlutterPlatformFactory* factory =
+      [[FlutterPlatformViewsTestMockFlutterPlatformFactory new] autorelease];
+  flutterPlatformViewsController->RegisterViewFactory(
+      factory, @"MockFlutterPlatformView",
+      FlutterPlatformViewGestureRecognizersBlockingPolicyEager);
+  XCTestExpectation* waitForPlatformView =
+      [self expectationWithDescription:@"wait for platform view to be created"];
+  FlutterResult result = ^(id result) {
+    [waitForPlatformView fulfill];
+  };
+
+  flutterPlatformViewsController->OnMethodCall(
+      [FlutterMethodCall
+          methodCallWithMethodName:@"create"
+                         arguments:@{@"id" : @2, @"viewType" : @"MockFlutterPlatformView"}],
+      result);
+  [self waitForExpectations:@[ waitForPlatformView ] timeout:30];
+  XCTAssertNotNil(gMockPlatformView);
+
+  flutterPlatformViewsController->BeginFrame(SkISize::Make(300, 300));
+  SkMatrix finalMatrix;
+  flutter::MutatorsStack stack;
+  auto embeddedViewParams =
+      std::make_unique<flutter::EmbeddedViewParams>(finalMatrix, SkSize::Make(300, 300), stack);
+  flutterPlatformViewsController->PrerollCompositeEmbeddedView(2, std::move(embeddedViewParams));
+
+  fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger =
+      fml::MakeRefCounted<fml::RasterThreadMerger>(thread_task_runner_platform->GetTaskQueueId(),
+                                                   thread_task_runner_other->GetTaskQueueId());
+  XCTAssertEqual(flutterPlatformViewsController->PostPrerollAction(raster_thread_merger),
+                 flutter::PostPrerollResult::kSkipAndRetryFrame);
+  XCTAssertFalse(raster_thread_merger->IsMerged());
+
+  flutterPlatformViewsController->EndFrame(true, raster_thread_merger);
+  XCTAssertTrue(raster_thread_merger->IsMerged());
+
+  // Unmerge threads before the end of the test
+  // TaskRunners are required to be unmerged before destruction.
+  while (raster_thread_merger->DecrementLease() != fml::RasterThreadStatus::kUnmergedNow)
+    ;
+}
+
 - (int)alphaOfPoint:(CGPoint)point onView:(UIView*)view {
   unsigned char pixel[4] = {0};
 
@@ -1099,6 +1164,38 @@ fml::RefPtr<fml::TaskRunner> CreateNewThread(std::string name) {
   CGColorSpaceRelease(colorSpace);
   // Get the alpha from the pixel that we just rendered.
   return pixel[3];
+}
+
+- (void)testHasFirstResponderInViewHierarchySubtree_viewItselfBecomesFirstResponder {
+  // For view to become the first responder, it must be a descendant of a UIWindow
+  UIWindow* window = [[UIWindow alloc] init];
+  UITextField* textField = [[UITextField alloc] init];
+  [window addSubview:textField];
+
+  [textField becomeFirstResponder];
+  XCTAssertTrue(textField.isFirstResponder);
+  XCTAssertTrue(textField.flt_hasFirstResponderInViewHierarchySubtree);
+  [textField resignFirstResponder];
+  XCTAssertFalse(textField.isFirstResponder);
+  XCTAssertFalse(textField.flt_hasFirstResponderInViewHierarchySubtree);
+}
+
+- (void)testHasFirstResponderInViewHierarchySubtree_descendantViewBecomesFirstResponder {
+  // For view to become the first responder, it must be a descendant of a UIWindow
+  UIWindow* window = [[UIWindow alloc] init];
+  UIView* view = [[UIView alloc] init];
+  UIView* childView = [[UIView alloc] init];
+  UITextField* textField = [[UITextField alloc] init];
+  [window addSubview:view];
+  [view addSubview:childView];
+  [childView addSubview:textField];
+
+  [textField becomeFirstResponder];
+  XCTAssertTrue(textField.isFirstResponder);
+  XCTAssertTrue(view.flt_hasFirstResponderInViewHierarchySubtree);
+  [textField resignFirstResponder];
+  XCTAssertFalse(textField.isFirstResponder);
+  XCTAssertFalse(view.flt_hasFirstResponderInViewHierarchySubtree);
 }
 
 @end

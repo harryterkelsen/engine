@@ -41,7 +41,7 @@ class UIDartState : public tonic::DartState {
   ///         UIDartState, a pointer to the resource can be added to this
   ///         struct with appropriate default construction.
   struct Context {
-    Context(const TaskRunners& task_runners);
+    explicit Context(const TaskRunners& task_runners);
 
     Context(const TaskRunners& task_runners,
             fml::WeakPtr<SnapshotDelegate> snapshot_delegate,
@@ -120,8 +120,6 @@ class UIDartState : public tonic::DartState {
 
   fml::WeakPtr<SnapshotDelegate> GetSnapshotDelegate() const;
 
-  fml::WeakPtr<GrDirectContext> GetResourceContext() const;
-
   fml::WeakPtr<ImageDecoder> GetImageDecoder() const;
 
   fml::WeakPtr<ImageGeneratorRegistry> GetImageGeneratorRegistry() const;
@@ -129,9 +127,6 @@ class UIDartState : public tonic::DartState {
   std::shared_ptr<IsolateNameServer> GetIsolateNameServer() const;
 
   tonic::DartErrorHandleType GetLastError();
-
-  void ReportUnhandledException(const std::string& error,
-                                const std::string& stack_trace);
 
   // Logs `print` messages from the application via an embedder-specified
   // logging mechanism.
@@ -142,8 +137,6 @@ class UIDartState : public tonic::DartState {
   void LogMessage(const std::string& tag, const std::string& message) const;
 
   bool enable_skparagraph() const;
-
-  bool enable_display_list() const;
 
   template <class T>
   static flutter::SkiaGPUObject<T> CreateGPUObject(sk_sp<T> object) {
@@ -156,6 +149,10 @@ class UIDartState : public tonic::DartState {
     return {std::move(object), std::move(queue)};
   };
 
+  UnhandledExceptionCallback unhandled_exception_callback() const {
+    return unhandled_exception_callback_;
+  }
+
  protected:
   UIDartState(TaskObserverAdd add_callback,
               TaskObserverRemove remove_callback,
@@ -165,7 +162,6 @@ class UIDartState : public tonic::DartState {
               std::shared_ptr<IsolateNameServer> isolate_name_server,
               bool is_root_isolate_,
               bool enable_skparagraph,
-              bool enable_display_list,
               const UIDartState::Context& context);
 
   ~UIDartState() override;
@@ -174,8 +170,6 @@ class UIDartState : public tonic::DartState {
       std::unique_ptr<PlatformConfiguration> platform_configuration);
 
   const std::string& GetAdvisoryScriptURI() const;
-
-  const std::string& GetAdvisoryScriptEntrypoint() const;
 
  private:
   void DidSetIsolate() override;
@@ -192,7 +186,6 @@ class UIDartState : public tonic::DartState {
   LogMessageCallback log_message_callback_;
   const std::shared_ptr<IsolateNameServer> isolate_name_server_;
   const bool enable_skparagraph_;
-  const bool enable_display_list_;
   UIDartState::Context context_;
 
   void AddOrRemoveTaskObserver(bool add);

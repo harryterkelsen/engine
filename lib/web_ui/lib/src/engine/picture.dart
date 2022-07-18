@@ -3,13 +3,15 @@
 // found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:html' as html;
 
 import 'package:ui/ui.dart' as ui;
 
+import 'dom.dart';
 import 'html/bitmap_canvas.dart';
 import 'html/recording_canvas.dart';
 import 'html_image_codec.dart';
+import 'safe_browser_api.dart';
+import 'util.dart';
 
 /// An implementation of [ui.PictureRecorder] backed by a [RecordingCanvas].
 class EnginePictureRecorder implements ui.PictureRecorder {
@@ -56,7 +58,7 @@ class EnginePicture implements ui.Picture {
     final BitmapCanvas canvas = BitmapCanvas.imageData(imageRect);
     recordingCanvas!.apply(canvas, imageRect);
     final String imageDataUrl = canvas.toDataUrl();
-    final html.ImageElement imageElement = html.ImageElement()
+    final DomHTMLImageElement imageElement = createDomHTMLImageElement()
       ..src = imageDataUrl
       ..width = width
       ..height = height;
@@ -64,19 +66,48 @@ class EnginePicture implements ui.Picture {
     // The image loads asynchronously. We need to wait before returning,
     // otherwise the returned HtmlImage will be temporarily unusable.
     final Completer<ui.Image> onImageLoaded = Completer<ui.Image>.sync();
-    imageElement.onError.first.then(onImageLoaded.completeError);
-    imageElement.onLoad.first.then((_) {
+
+    // Ignoring the returned futures from onError and onLoad because we're
+    // communicating through the `onImageLoaded` completer.
+    late final DomEventListener errorListener;
+    errorListener = allowInterop((DomEvent event) {
+      onImageLoaded.completeError(event);
+      imageElement.removeEventListener('error', errorListener);
+    });
+    imageElement.addEventListener('error', errorListener);
+    late final DomEventListener loadListener;
+    loadListener = allowInterop((DomEvent event) {
       onImageLoaded.complete(HtmlImage(
         imageElement,
         width,
         height,
       ));
+      imageElement.removeEventListener('load', loadListener);
     });
+    imageElement.addEventListener('load', loadListener);
     return onImageLoaded.future;
   }
 
   @override
-  void dispose() {}
+  ui.Image toImageSync(int width, int height) {
+    throw UnsupportedError('toImageSync is not supported on the HTML backend. Use drawPicture instead, or toImage.');
+  }
+
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+  }
+
+  @override
+  bool get debugDisposed {
+    if (assertionsEnabled) {
+      return _disposed;
+    }
+    throw StateError('Picture.debugDisposed is only available when asserts are enabled.');
+  }
+
 
   @override
   int get approximateBytesUsed => 0;

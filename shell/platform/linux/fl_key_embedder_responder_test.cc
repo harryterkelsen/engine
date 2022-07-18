@@ -6,7 +6,7 @@
 
 #include "gtest/gtest.h"
 
-#include "flutter/shell/platform/embedder/test_utils/key_codes.h"
+#include "flutter/shell/platform/embedder/test_utils/key_codes.g.h"
 #include "flutter/shell/platform/embedder/test_utils/proc_table_replacement.h"
 #include "flutter/shell/platform/linux/fl_binary_messenger_private.h"
 #include "flutter/shell/platform/linux/fl_engine_private.h"
@@ -19,8 +19,11 @@ constexpr gboolean kPress = TRUE;
 constexpr gboolean kIsModifier = TRUE;
 constexpr gboolean kIsNotModifier = FALSE;
 
+constexpr guint16 kKeyCodeDigit1 = 0x0au;
 constexpr guint16 kKeyCodeKeyA = 0x26u;
+constexpr guint16 kKeyCodeShiftLeft = 0x32u;
 constexpr guint16 kKeyCodeShiftRight = 0x3Eu;
+constexpr guint16 kKeyCodeAltRight = 0x6Cu;
 constexpr guint16 kKeyCodeNumpad1 = 0x57u;
 constexpr guint16 kKeyCodeNumLock = 0x4Du;
 constexpr guint16 kKeyCodeCapsLock = 0x42u;
@@ -86,7 +89,7 @@ static FlKeyEmbedderCallRecord* fl_key_embedder_call_record_new(
   if (event->character != nullptr) {
     size_t character_length = strlen(event->character);
     char* clone_character = g_new(char, character_length + 1);
-    strcpy(clone_character, event->character);
+    strncpy(clone_character, event->character, character_length + 1);
     clone_event->character = clone_character;
   }
   self->event = clone_event;
@@ -145,20 +148,14 @@ namespace {
 GPtrArray* g_call_records;
 }
 
-static FlEngine* make_mock_engine_with_records() {
-  FlEngine* engine = make_mock_engine();
-  FlutterEngineProcTable* embedder_api = fl_engine_get_embedder_api(engine);
-  embedder_api->SendKeyEvent = [](auto engine, const FlutterKeyEvent* event,
-                                  FlutterKeyEventCallback callback,
-                                  void* user_data) {
-    if (g_call_records != nullptr) {
-      g_ptr_array_add(g_call_records, fl_key_embedder_call_record_new(
-                                          event, callback, user_data));
+static EmbedderSendKeyEvent record_calls_in(GPtrArray* records_array) {
+  return [records_array](const FlutterKeyEvent* event,
+                         FlutterKeyEventCallback callback, void* user_data) {
+    if (records_array != nullptr) {
+      g_ptr_array_add(records_array, fl_key_embedder_call_record_new(
+                                         event, callback, user_data));
     }
-    return kSuccess;
   };
-
-  return engine;
 }
 
 static void clear_g_call_records() {
@@ -170,9 +167,8 @@ static void clear_g_call_records() {
 TEST(FlKeyEmbedderResponderTest, SendKeyEvent) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -197,8 +193,6 @@ TEST(FlKeyEmbedderResponderTest, SendKeyEvent) {
 
   invoke_record_callback_and_verify(record, TRUE, &user_data);
   g_ptr_array_clear(g_call_records);
-
-  // Skip testing key repeats, which is not present on GDK.
 
   // Key up
   fl_key_responder_handle_event(
@@ -262,13 +256,41 @@ TEST(FlKeyEmbedderResponderTest, SendKeyEvent) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  // TODO(dkwingsmt): Convert `engine` and `responder` to `g_autofree`.
-  // The current implementation is because `responder` must be unreferenced
-  // after `engine`, otherwise crash will *consistantly* occur on CI even if
-  // everything passes locally.  This is a strange bug I've tried to track for
-  // dozens of hours in vain.  It shouldn't affect real application anyway,
-  // since it seems to appear only during the "reboot" of the engine.
-  g_object_unref(engine);
+  g_object_unref(responder);
+}
+
+// Basic key presses, but uses the specified logical key if it is not 0.
+TEST(FlKeyEmbedderResponderTest, UsesSpecifiedLogicalKey) {
+  EXPECT_EQ(g_call_records, nullptr);
+  g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
+  int user_data = 123;  // Arbitrary user data
+
+  FlKeyEmbedderCallRecord* record;
+
+  // On an AZERTY keyboard, press physical key 1, and release.
+  // Key down
+  fl_key_responder_handle_event(
+      responder,
+      fl_key_event_new_by_mock(12345, kPress, GDK_KEY_ampersand, kKeyCodeDigit1,
+                               0, kIsNotModifier),
+      verify_response_handled, &user_data, kLogicalDigit1);
+
+  EXPECT_EQ(g_call_records->len, 1u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 0));
+  EXPECT_EQ(record->event->struct_size, sizeof(FlutterKeyEvent));
+  EXPECT_EQ(record->event->timestamp, 12345000);
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeDown);
+  EXPECT_EQ(record->event->physical, kPhysicalDigit1);
+  EXPECT_EQ(record->event->logical, kLogicalDigit1);
+  EXPECT_STREQ(record->event->character, "&");
+  EXPECT_EQ(record->event->synthesized, false);
+
+  invoke_record_callback_and_verify(record, TRUE, &user_data);
+  g_ptr_array_clear(g_call_records);
+
+  clear_g_call_records();
   g_object_unref(responder);
 }
 
@@ -276,9 +298,8 @@ TEST(FlKeyEmbedderResponderTest, SendKeyEvent) {
 TEST(FlKeyEmbedderResponderTest, PressShiftDuringLetterKeyTap) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -356,7 +377,6 @@ TEST(FlKeyEmbedderResponderTest, PressShiftDuringLetterKeyTap) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -371,9 +391,8 @@ TEST(FlKeyEmbedderResponderTest, PressShiftDuringLetterKeyTap) {
 TEST(FlKeyEmbedderResponderTest, TapNumPadKeysBetweenNumLockEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -523,7 +542,101 @@ TEST(FlKeyEmbedderResponderTest, TapNumPadKeysBetweenNumLockEvents) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
+  g_object_unref(responder);
+}
+
+// Press or release digit 1 between presses/releases of Shift.
+//
+// GTK will change the virtual key during a key tap, and the embedder
+// should regularize it.
+TEST(FlKeyEmbedderResponderTest, ReleaseShiftKeyBetweenDigitKeyEvents) {
+  EXPECT_EQ(g_call_records, nullptr);
+  g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
+  int user_data = 123;  // Arbitrary user data
+
+  FlKeyEmbedderCallRecord* record;
+
+  guint state = 0;
+
+  // Press shift left
+  fl_key_responder_handle_event(
+      responder,
+      fl_key_event_new_by_mock(101, kPress, GDK_KEY_Shift_L, kKeyCodeShiftLeft,
+                               state, kIsModifier),
+      verify_response_handled, &user_data);
+
+  EXPECT_EQ(g_call_records->len, 1u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 0));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeDown);
+  EXPECT_EQ(record->event->physical, kPhysicalShiftLeft);
+  EXPECT_EQ(record->event->logical, kLogicalShiftLeft);
+  EXPECT_STREQ(record->event->character, nullptr);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  invoke_record_callback_and_verify(record, TRUE, &user_data);
+  g_ptr_array_clear(g_call_records);
+
+  state = GDK_SHIFT_MASK;
+
+  // Press digit 1, which is '!' on a US keyboard
+  fl_key_responder_handle_event(
+      responder,
+      fl_key_event_new_by_mock(102, kPress, GDK_KEY_exclam, kKeyCodeDigit1,
+                               state, kIsNotModifier),
+      verify_response_handled, &user_data);
+
+  EXPECT_EQ(g_call_records->len, 1u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 0));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeDown);
+  EXPECT_EQ(record->event->physical, kPhysicalDigit1);
+  EXPECT_EQ(record->event->logical, kLogicalExclamation);
+  EXPECT_STREQ(record->event->character, "!");
+  EXPECT_EQ(record->event->synthesized, false);
+
+  invoke_record_callback_and_verify(record, TRUE, &user_data);
+  g_ptr_array_clear(g_call_records);
+
+  // Release shift
+  fl_key_responder_handle_event(
+      responder,
+      fl_key_event_new_by_mock(103, kRelease, GDK_KEY_Shift_L,
+                               kKeyCodeShiftLeft, state, kIsModifier),
+      verify_response_handled, &user_data);
+
+  EXPECT_EQ(g_call_records->len, 1u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 0));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeUp);
+  EXPECT_EQ(record->event->physical, kPhysicalShiftLeft);
+  EXPECT_EQ(record->event->logical, kLogicalShiftLeft);
+  EXPECT_STREQ(record->event->character, nullptr);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  invoke_record_callback_and_verify(record, TRUE, &user_data);
+  g_ptr_array_clear(g_call_records);
+
+  state = 0;
+
+  // Release digit 1, which is "1" because shift has been released.
+  fl_key_responder_handle_event(
+      responder,
+      fl_key_event_new_by_mock(104, kRelease, GDK_KEY_1, kKeyCodeDigit1, state,
+                               kIsNotModifier),
+      verify_response_handled, &user_data);
+
+  EXPECT_EQ(g_call_records->len, 1u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 0));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeUp);
+  EXPECT_EQ(record->event->physical, kPhysicalDigit1);
+  EXPECT_EQ(record->event->logical, kLogicalExclamation);  // Important
+  EXPECT_STREQ(record->event->character, nullptr);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  invoke_record_callback_and_verify(record, TRUE, &user_data);
+  g_ptr_array_clear(g_call_records);
+
+  clear_g_call_records();
   g_object_unref(responder);
 }
 
@@ -534,9 +647,8 @@ TEST(FlKeyEmbedderResponderTest, TapNumPadKeysBetweenNumLockEvents) {
 TEST(FlKeyEmbedderResponderTest, TapLetterKeysBetweenCapsLockEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -686,7 +798,6 @@ TEST(FlKeyEmbedderResponderTest, TapLetterKeysBetweenCapsLockEvents) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -697,9 +808,8 @@ TEST(FlKeyEmbedderResponderTest, TapLetterKeysBetweenCapsLockEvents) {
 TEST(FlKeyEmbedderResponderTest, TapLetterKeysBetweenCapsLockEventsReversed) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -849,16 +959,14 @@ TEST(FlKeyEmbedderResponderTest, TapLetterKeysBetweenCapsLockEventsReversed) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
-TEST(FlKeyEmbedderResponderTest, IgnoreDuplicateDownEvent) {
+TEST(FlKeyEmbedderResponderTest, TurnDuplicateDownEventsToRepeats) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -876,24 +984,25 @@ TEST(FlKeyEmbedderResponderTest, IgnoreDuplicateDownEvent) {
   invoke_record_callback_and_verify(record, TRUE, &user_data);
   g_ptr_array_clear(g_call_records);
 
-  // Press KeyA again (with different logical key, which is not necessari but
-  // for coverage).
-  g_expected_handled = true;  // The empty event is always handled.
+  // Another KeyA down events, which usually means a repeated event.
+  g_expected_handled = false;
   fl_key_responder_handle_event(
       responder,
-      fl_key_event_new_by_mock(102, kPress, GDK_KEY_q, kKeyCodeKeyA, 0,
+      fl_key_event_new_by_mock(102, kPress, GDK_KEY_a, kKeyCodeKeyA, 0,
                                kIsNotModifier),
       verify_response_handled, &user_data);
 
   EXPECT_EQ(g_call_records->len, 1u);
 
   record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 0));
-  EXPECT_EQ(record->event->physical, 0ull);
-  EXPECT_EQ(record->event->logical, 0ull);
-  EXPECT_STREQ(record->event->character, nullptr);
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeRepeat);
+  EXPECT_EQ(record->event->physical, kPhysicalKeyA);
+  EXPECT_EQ(record->event->logical, kLogicalKeyA);
+  EXPECT_STREQ(record->event->character, "a");
   EXPECT_EQ(record->event->synthesized, false);
-  EXPECT_EQ(record->callback, nullptr);
+  EXPECT_NE(record->callback, nullptr);
 
+  invoke_record_callback_and_verify(record, TRUE, &user_data);
   g_ptr_array_clear(g_call_records);
 
   // Release KeyA
@@ -909,7 +1018,6 @@ TEST(FlKeyEmbedderResponderTest, IgnoreDuplicateDownEvent) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -918,9 +1026,8 @@ TEST(FlKeyEmbedderResponderTest, IgnoreAbruptUpEvent) {
 
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   // Release KeyA before it was even pressed.
@@ -941,7 +1048,6 @@ TEST(FlKeyEmbedderResponderTest, IgnoreAbruptUpEvent) {
   EXPECT_EQ(record->callback, nullptr);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -950,9 +1056,8 @@ TEST(FlKeyEmbedderResponderTest, IgnoreAbruptUpEvent) {
 TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncPressingStateOnSelfEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -1073,7 +1178,6 @@ TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncPressingStateOnSelfEvents) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -1083,9 +1187,8 @@ TEST(FlKeyEmbedderResponderTest,
      SynthesizeForDesyncPressingStateOnNonSelfEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -1206,7 +1309,6 @@ TEST(FlKeyEmbedderResponderTest,
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -1216,9 +1318,8 @@ TEST(FlKeyEmbedderResponderTest,
      SynthesizeForDesyncPressingStateOnRemappedEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -1277,7 +1378,6 @@ TEST(FlKeyEmbedderResponderTest,
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -1286,9 +1386,8 @@ TEST(FlKeyEmbedderResponderTest,
 TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncLockModeOnNonSelfEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -1387,7 +1486,6 @@ TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncLockModeOnNonSelfEvents) {
   EXPECT_EQ(record->callback, nullptr);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -1396,9 +1494,8 @@ TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncLockModeOnNonSelfEvents) {
 TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncLockModeOnSelfEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -1488,7 +1585,6 @@ TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncLockModeOnSelfEvents) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
   g_object_unref(responder);
 }
 
@@ -1497,9 +1593,8 @@ TEST(FlKeyEmbedderResponderTest, SynthesizeForDesyncLockModeOnSelfEvents) {
 TEST(FlKeyEmbedderResponderTest, SynthesizationOccursOnIgnoredEvents) {
   EXPECT_EQ(g_call_records, nullptr);
   g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
-  FlEngine* engine = make_mock_engine_with_records();
-  FlKeyResponder* responder =
-      FL_KEY_RESPONDER(fl_key_embedder_responder_new(engine));
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
   int user_data = 123;  // Arbitrary user data
 
   FlKeyEmbedderCallRecord* record;
@@ -1535,6 +1630,107 @@ TEST(FlKeyEmbedderResponderTest, SynthesizationOccursOnIgnoredEvents) {
   g_ptr_array_clear(g_call_records);
 
   clear_g_call_records();
-  g_object_unref(engine);
+  g_object_unref(responder);
+}
+
+// This test case occurs when the following two cases collide:
+//
+// 1. When holding shift, AltRight key gives logical GDK_KEY_Meta_R with the
+//    state bitmask still MOD3 (Alt).
+// 2. When holding AltRight, ShiftLeft key gives logical GDK_KEY_ISO_Next_Group
+//    with the state bitmask RESERVED_14.
+//
+// The resulting event sequence is not perfectly ideal: it had to synthesize
+// AltLeft down because the physical AltRight key corresponds to logical
+// MetaRight at the moment.
+TEST(FlKeyEmbedderResponderTest, HandlesShiftAltVersusGroupNext) {
+  EXPECT_EQ(g_call_records, nullptr);
+  g_call_records = g_ptr_array_new_with_free_func(g_object_unref);
+  FlKeyResponder* responder = FL_KEY_RESPONDER(
+      fl_key_embedder_responder_new(record_calls_in(g_call_records)));
+
+  g_expected_handled = true;
+  guint32 now_time = 1;
+  // A convenient shorthand to simulate events.
+  auto send_key_event = [responder, &now_time](bool is_press, guint keyval,
+                                               guint16 keycode, int state) {
+    now_time += 1;
+    int user_data = 123;  // Arbitrary user data
+    fl_key_responder_handle_event(
+        responder,
+        fl_key_event_new_by_mock(now_time, is_press, keyval, keycode, state,
+                                 kIsModifier),
+        verify_response_handled, &user_data);
+  };
+
+  FlKeyEmbedderCallRecord* record;
+
+  send_key_event(kPress, GDK_KEY_Shift_L, kKeyCodeShiftLeft, 0x2000000);
+  EXPECT_EQ(g_call_records->len, 1u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 0));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeDown);
+  EXPECT_EQ(record->event->physical, kPhysicalShiftLeft);
+  EXPECT_EQ(record->event->logical, kLogicalShiftLeft);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  send_key_event(kPress, GDK_KEY_Meta_R, kKeyCodeAltRight, 0x2000001);
+  EXPECT_EQ(g_call_records->len, 2u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 1));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeDown);
+  EXPECT_EQ(record->event->physical, kPhysicalAltRight);
+  EXPECT_EQ(record->event->logical, kLogicalMetaRight);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  send_key_event(kRelease, GDK_KEY_ISO_Next_Group, kKeyCodeShiftLeft,
+                 0x2000009);
+  EXPECT_EQ(g_call_records->len, 5u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 2));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeDown);
+  EXPECT_EQ(record->event->physical, kPhysicalAltLeft);
+  EXPECT_EQ(record->event->logical, kLogicalAltLeft);
+  EXPECT_EQ(record->event->synthesized, true);
+
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 3));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeUp);
+  EXPECT_EQ(record->event->physical, kPhysicalAltRight);
+  EXPECT_EQ(record->event->logical, kLogicalMetaRight);
+  EXPECT_EQ(record->event->synthesized, true);
+
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 4));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeUp);
+  EXPECT_EQ(record->event->physical, kPhysicalShiftLeft);
+  EXPECT_EQ(record->event->logical, kLogicalShiftLeft);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  send_key_event(kPress, GDK_KEY_ISO_Next_Group, kKeyCodeShiftLeft, 0x2000008);
+  EXPECT_EQ(g_call_records->len, 6u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 5));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeDown);
+  EXPECT_EQ(record->event->physical, kPhysicalShiftLeft);
+  EXPECT_EQ(record->event->logical, kLogicalGroupNext);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  send_key_event(kRelease, GDK_KEY_ISO_Level3_Shift, kKeyCodeAltRight,
+                 0x2002008);
+  EXPECT_EQ(g_call_records->len, 7u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 6));
+  EXPECT_EQ(record->event->physical, 0u);
+  EXPECT_EQ(record->event->logical, 0u);
+
+  send_key_event(kRelease, GDK_KEY_Shift_L, kKeyCodeShiftLeft, 0x2002000);
+  EXPECT_EQ(g_call_records->len, 9u);
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 7));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeUp);
+  EXPECT_EQ(record->event->physical, kPhysicalAltLeft);
+  EXPECT_EQ(record->event->logical, kLogicalAltLeft);
+  EXPECT_EQ(record->event->synthesized, true);
+
+  record = FL_KEY_EMBEDDER_CALL_RECORD(g_ptr_array_index(g_call_records, 8));
+  EXPECT_EQ(record->event->type, kFlutterKeyEventTypeUp);
+  EXPECT_EQ(record->event->physical, kPhysicalShiftLeft);
+  EXPECT_EQ(record->event->logical, kLogicalGroupNext);
+  EXPECT_EQ(record->event->synthesized, false);
+
+  clear_g_call_records();
   g_object_unref(responder);
 }

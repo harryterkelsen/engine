@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:html' as html;
 import 'dart:js_util' as js_util;
 import 'dart:typed_data';
 
@@ -19,7 +18,9 @@ void main() {
   internalBootstrapBrowserTest(() => testMain);
 }
 
-void testMain() {
+Future<void> testMain() async {
+  await ui.webOnlyInitializePlatform();
+
   test('onTextScaleFactorChanged preserves the zone', () {
     final Zone innerZone = Zone.current.fork();
 
@@ -300,7 +301,7 @@ void testMain() {
 
   /// Regression test for https://github.com/flutter/flutter/issues/66128.
   test('setPreferredOrientation responds even if browser doesn\'t support api', () async {
-    final html.Screen screen = html.window.screen!;
+    final DomScreen screen = domWindow.screen!;
     js_util.setProperty(screen, 'orientation', null);
 
     final Completer<bool> completer = Completer<bool>();
@@ -326,7 +327,7 @@ void testMain() {
       localeChangedCount += 1;
     };
 
-    ensureDomRendererInitialized();
+    ensureFlutterViewEmbedderInitialized();
 
     // We populate the initial list of locales automatically (only test that we
     // got some locales; some contributors may be in different locales, so we
@@ -341,14 +342,15 @@ void testMain() {
     expect(window.locales, isEmpty);
     expect(window.locale, equals(const ui.Locale.fromSubtags()));
     expect(localeChangedCount, 0);
-    html.window.dispatchEvent(html.Event('languagechange'));
+    domWindow.dispatchEvent(createDomEvent('Event', 'languagechange'));
     expect(window.locales, isNotEmpty);
     expect(localeChangedCount, 1);
   });
 
   test('dispatches browser event on flutter/service_worker channel', () async {
     final Completer<void> completer = Completer<void>();
-    html.window.addEventListener('flutter-first-frame', completer.complete);
+    domWindow.addEventListener('flutter-first-frame',
+        allowInterop(completer.complete));
     final Zone innerZone = Zone.current.fork();
 
     innerZone.runGuarded(() {

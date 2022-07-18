@@ -7,6 +7,7 @@ assert(is_ios)
 import("//build/config/ios/ios_sdk.gni")
 import("//build/toolchain/clang.gni")
 import("//flutter/common/config.gni")
+import("//flutter/shell/config.gni")
 import("//flutter/shell/gpu/gpu.gni")
 import("//flutter/shell/platform/darwin/common/framework_shared.gni")
 import("//flutter/testing/testing.gni")
@@ -78,18 +79,21 @@ source_set("flutter_framework_source") {
     "framework/Source/FlutterRestorationPlugin.mm",
     "framework/Source/FlutterSemanticsScrollView.h",
     "framework/Source/FlutterSemanticsScrollView.mm",
-    "framework/Source/FlutterTextEditingDelta.h",
-    "framework/Source/FlutterTextEditingDelta.mm",
+    "framework/Source/FlutterSpellCheckPlugin.h",
+    "framework/Source/FlutterSpellCheckPlugin.mm",
     "framework/Source/FlutterTextInputDelegate.h",
     "framework/Source/FlutterTextInputPlugin.h",
     "framework/Source/FlutterTextInputPlugin.mm",
     "framework/Source/FlutterUIPressProxy.h",
     "framework/Source/FlutterUIPressProxy.mm",
+    "framework/Source/FlutterUndoManagerDelegate.h",
+    "framework/Source/FlutterUndoManagerPlugin.h",
+    "framework/Source/FlutterUndoManagerPlugin.mm",
     "framework/Source/FlutterView.h",
     "framework/Source/FlutterView.mm",
     "framework/Source/FlutterViewController.mm",
     "framework/Source/FlutterViewController_Internal.h",
-    "framework/Source/KeyCodeMap.mm",
+    "framework/Source/KeyCodeMap.g.mm",
     "framework/Source/KeyCodeMap_Internal.h",
     "framework/Source/SemanticsObject.h",
     "framework/Source/SemanticsObject.mm",
@@ -101,8 +105,6 @@ source_set("flutter_framework_source") {
     "framework/Source/connection_collection.mm",
     "framework/Source/platform_message_response_darwin.h",
     "framework/Source/platform_message_response_darwin.mm",
-    "framework/Source/platform_message_router.h",
-    "framework/Source/platform_message_router.mm",
     "framework/Source/profiler_metrics_ios.h",
     "framework/Source/profiler_metrics_ios.mm",
     "framework/Source/vsync_waiter_ios.h",
@@ -127,6 +129,8 @@ source_set("flutter_framework_source") {
     "ios_surface_software.mm",
     "ios_switchable_gl_context.h",
     "ios_switchable_gl_context.mm",
+    "platform_message_handler_ios.h",
+    "platform_message_handler_ios.mm",
     "platform_view_ios.h",
     "platform_view_ios.mm",
     "rendering_api_selection.h",
@@ -139,12 +143,16 @@ source_set("flutter_framework_source") {
 
   if (shell_enable_metal) {
     sources += [
-      "ios_context_metal.h",
-      "ios_context_metal.mm",
+      "ios_context_metal_impeller.h",
+      "ios_context_metal_impeller.mm",
+      "ios_context_metal_skia.h",
+      "ios_context_metal_skia.mm",
       "ios_external_texture_metal.h",
       "ios_external_texture_metal.mm",
-      "ios_surface_metal.h",
-      "ios_surface_metal.mm",
+      "ios_surface_metal_impeller.h",
+      "ios_surface_metal_impeller.mm",
+      "ios_surface_metal_skia.h",
+      "ios_surface_metal_skia.mm",
     ]
 
     deps += [ "//flutter/shell/platform/darwin/graphics" ]
@@ -160,6 +168,7 @@ source_set("flutter_framework_source") {
     "//flutter/runtime",
     "//flutter/runtime:libdart",
     "//flutter/shell/common",
+    "//flutter/shell/platform/common:common_cpp_input",
     "//flutter/shell/platform/darwin/common",
     "//flutter/shell/platform/darwin/common:framework_shared",
     "//flutter/shell/platform/embedder:embedder_as_internal_library",
@@ -204,10 +213,14 @@ source_set("ios_test_flutter_mrc") {
     "framework/Source/FlutterPlatformPluginTest.mm",
     "framework/Source/FlutterPlatformViewsTest.mm",
     "framework/Source/FlutterViewTest.mm",
+    "framework/Source/VsyncWaiterIosTest.mm",
     "framework/Source/accessibility_bridge_test.mm",
+    "platform_message_handler_ios_test.mm",
   ]
   deps = [
     ":flutter_framework_source",
+    "//flutter/common:common",
+    "//flutter/shell/common:common",
     "//flutter/shell/platform/darwin/common:framework_shared",
     "//flutter/shell/platform/embedder:embedder_as_internal_library",
     "//flutter/third_party/tonic",
@@ -216,6 +229,10 @@ source_set("ios_test_flutter_mrc") {
     "//third_party/rapidjson",
     "//third_party/skia",
   ]
+
+  if (shell_enable_vulkan) {
+    deps += [ "//flutter/vulkan" ]
+  }
 }
 
 shared_library("ios_test_flutter") {
@@ -249,13 +266,15 @@ shared_library("ios_test_flutter") {
     "framework/Source/FlutterKeyboardManagerTest.mm",
     "framework/Source/FlutterPluginAppLifeCycleDelegateTest.mm",
     "framework/Source/FlutterRestorationPluginTest.mm",
-    "framework/Source/FlutterTextEditingDeltaTest.mm",
+    "framework/Source/FlutterSpellCheckPluginTest.mm",
     "framework/Source/FlutterTextInputPluginTest.mm",
+    "framework/Source/FlutterUndoManagerPluginTest.mm",
     "framework/Source/FlutterViewControllerTest.mm",
     "framework/Source/SemanticsObjectTest.mm",
     "framework/Source/connection_collection_test.mm",
   ]
   deps = [
+    ":flutter_framework",
     ":flutter_framework_source",
     ":ios_gpu_configuration",
     ":ios_test_flutter_mrc",
@@ -364,12 +383,6 @@ copy("copy_framework_icu") {
   outputs = [ "$_flutter_framework_dir/{{source_file_part}}" ]
 }
 
-copy("copy_framework_podspec") {
-  visibility = [ ":*" ]
-  sources = [ "framework/Flutter.podspec" ]
-  outputs = [ "$root_out_dir/Flutter.podspec" ]
-}
-
 copy("copy_license") {
   visibility = [ ":*" ]
   sources = [ "//LICENSE" ]
@@ -401,7 +414,6 @@ group("universal_flutter_framework") {
     ":copy_framework_icu",
     ":copy_framework_info_plist",
     ":copy_framework_module_map",
-    ":copy_framework_podspec",
     ":copy_license",
   ]
 

@@ -66,6 +66,7 @@ source_set("common") {
     "canvas_spy.h",
     "context_options.cc",
     "context_options.h",
+    "display.cc",
     "display.h",
     "display_manager.cc",
     "display_manager.h",
@@ -73,12 +74,15 @@ source_set("common") {
     "engine.h",
     "pipeline.cc",
     "pipeline.h",
+    "platform_message_handler.h",
     "platform_view.cc",
     "platform_view.h",
     "pointer_data_dispatcher.cc",
     "pointer_data_dispatcher.h",
     "rasterizer.cc",
     "rasterizer.h",
+    "resource_cache_limit_calculator.cc",
+    "resource_cache_limit_calculator.h",
     "run_configuration.cc",
     "run_configuration.h",
     "serialization_callbacks.cc",
@@ -94,6 +98,9 @@ source_set("common") {
     "switches.h",
     "thread_host.cc",
     "thread_host.h",
+    "variable_refresh_rate_display.cc",
+    "variable_refresh_rate_display.h",
+    "variable_refresh_rate_reporter.h",
     "vsync_waiter.cc",
     "vsync_waiter.h",
     "vsync_waiter_fallback.cc",
@@ -154,7 +161,10 @@ if (enable_unittests) {
   test_fixtures("shell_unittests_fixtures") {
     dart_main = "fixtures/shell_test.dart"
 
-    fixtures = [ "fixtures/shelltest_screenshot.png" ]
+    fixtures = [
+      "fixtures/shelltest_screenshot.png",
+      "fixtures/hello_loop_2.gif",
+    ]
   }
 
   shell_host_executable("shell_benchmarks") {
@@ -219,7 +229,7 @@ if (enable_unittests) {
       ":shell_unittests_gpu_configuration_config",
     ]
 
-    # SwiftShader only supports x86/x64_64
+    # SwiftShader only supports x86/x86_64
     if (target_cpu == "x86" || target_cpu == "x64") {
       if (test_enable_gl) {
         sources += [
@@ -256,14 +266,16 @@ if (enable_unittests) {
     sources = [
       "animator_unittests.cc",
       "canvas_spy_unittests.cc",
+      "context_options_unittests.cc",
       "engine_unittests.cc",
       "input_events_unittests.cc",
       "persistent_cache_unittests.cc",
       "pipeline_unittests.cc",
       "rasterizer_unittests.cc",
+      "resource_cache_limit_calculator_unittests.cc",
       "shell_unittests.cc",
-      "skp_shader_warmup_unittests.cc",
       "switches_unittests.cc",
+      "variable_refresh_rate_display_unittests.cc",
     ]
 
     deps = [
@@ -286,6 +298,14 @@ if (enable_unittests) {
         "$fuchsia_sdk_root/pkg:fidl_cpp",
         "$fuchsia_sdk_root/pkg:sys_cpp",
       ]
+    } else {
+      # TODO(63837): This test is hard-coded to use a TestGLSurface so it cannot run on fuchsia.
+      sources += [ "shell_io_manager_unittests.cc" ]
+
+      # Swiftshader only needed on non-Fuchsia platforms.
+      if (shell_enable_vulkan) {
+        deps += [ "//third_party/swiftshader" ]
+      }
     }
   }
 }

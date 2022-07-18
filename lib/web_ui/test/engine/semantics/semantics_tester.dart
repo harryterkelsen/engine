@@ -3,12 +3,12 @@
 // found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:html' as html;
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:ui/src/engine.dart' show domRenderer, toMatrix32;
 import 'package:ui/src/engine/browser_detection.dart';
+import 'package:ui/src/engine/dom.dart';
+import 'package:ui/src/engine/embedder.dart';
 import 'package:ui/src/engine/host_node.dart';
 import 'package:ui/src/engine/semantics.dart';
 import 'package:ui/src/engine/util.dart';
@@ -20,10 +20,10 @@ import '../../matchers.dart';
 /// Gets the DOM host where the Flutter app is being rendered.
 ///
 /// This function returns the correct host for the flutter app under testing,
-/// so we don't have to hardcode html.document across the test. (The host of a
-/// normal flutter app used to be html.document, but now that the app is wrapped
+/// so we don't have to hardcode domDocument across the test. (The host of a
+/// normal flutter app used to be domDocument, but now that the app is wrapped
 /// in a Shadow DOM, that's not the case anymore.)
-HostNode get appHostNode => domRenderer.glassPaneShadow!;
+HostNode get appHostNode => flutterViewEmbedder.glassPaneShadow!;
 
 /// CSS style applied to the root of the semantics tree.
 // TODO(yjbanov): this should be handled internally by [expectSemanticsTree].
@@ -360,21 +360,22 @@ class SemanticsTester {
 
 /// Verifies the HTML structure of the current semantics tree.
 void expectSemanticsTree(String semanticsHtml) {
+  const List<String> ignoredAttributes = <String>['pointer-events'];
   expect(
-    canonicalizeHtml(appHostNode.querySelector('flt-semantics')!.outerHtml!),
+    canonicalizeHtml(appHostNode.querySelector('flt-semantics')!.outerHTML!, ignoredAttributes: ignoredAttributes),
     canonicalizeHtml(semanticsHtml),
   );
 }
 
 /// Finds the first HTML element in the semantics tree used for scrolling.
-html.Element? findScrollable() {
-  return appHostNode.querySelectorAll('flt-semantics').cast<html.Element?>().firstWhere(
-        (html.Element? element) =>
-            element!.style.overflow == 'hidden' ||
-            element.style.overflowY == 'scroll' ||
-            element.style.overflowX == 'scroll',
-        orElse: () => null,
-      );
+DomElement? findScrollable() {
+  return appHostNode.querySelectorAll('flt-semantics').firstWhereOrNull(
+    (DomElement? element) {
+      return element!.style.overflow == 'hidden' ||
+        element.style.overflowY == 'scroll' ||
+        element.style.overflowX == 'scroll';
+    },
+  );
 }
 
 /// Logs semantics actions dispatched to [ui.window].

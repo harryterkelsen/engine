@@ -17,9 +17,7 @@ class TextureLayer : public Layer {
                const SkSize& size,
                int64_t texture_id,
                bool freeze,
-               const SkSamplingOptions& sampling);
-
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
+               DlImageSampling sampling);
 
   bool IsReplacing(DiffContext* context, const Layer* layer) const override {
     return layer->as_texture_layer() != nullptr;
@@ -29,8 +27,6 @@ class TextureLayer : public Layer {
 
   const TextureLayer* as_texture_layer() const override { return this; }
 
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
-
   void Preroll(PrerollContext* context, const SkMatrix& matrix) override;
   void Paint(PaintContext& context) const override;
 
@@ -39,7 +35,7 @@ class TextureLayer : public Layer {
   SkSize size_;
   int64_t texture_id_;
   bool freeze_;
-  SkSamplingOptions sampling_;
+  DlImageSampling sampling_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(TextureLayer);
 };

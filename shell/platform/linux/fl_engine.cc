@@ -12,15 +12,22 @@
 #include "flutter/shell/platform/linux/fl_binary_messenger_private.h"
 #include "flutter/shell/platform/linux/fl_dart_project_private.h"
 #include "flutter/shell/platform/linux/fl_engine_private.h"
+#include "flutter/shell/platform/linux/fl_pixel_buffer_texture_private.h"
 #include "flutter/shell/platform/linux/fl_plugin_registrar_private.h"
 #include "flutter/shell/platform/linux/fl_renderer.h"
 #include "flutter/shell/platform/linux/fl_renderer_headless.h"
 #include "flutter/shell/platform/linux/fl_settings_plugin.h"
+#include "flutter/shell/platform/linux/fl_texture_gl_private.h"
 #include "flutter/shell/platform/linux/fl_texture_registrar_private.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_plugin_registry.h"
 
 // Unique number associated with platform tasks.
 static constexpr size_t kPlatformTaskRunnerIdentifier = 1;
+
+// Use different device ID for mouse and pan/zoom events, since we can't
+// differentiate the actual device (mouse v.s. trackpad)
+static constexpr int32_t kMousePointerDeviceId = 0;
+static constexpr int32_t kPointerPanZoomDeviceId = 1;
 
 struct _FlEngine {
   GObject parent_instance;
@@ -48,7 +55,7 @@ struct _FlEngine {
   gpointer update_semantics_node_handler_data;
   GDestroyNotify update_semantics_node_handler_destroy_notify;
 
-  // Function to call when the engine is restarted.
+  // Function to call right before the engine is restarted.
   FlEngineOnPreEngineRestartHandler on_pre_engine_restart_handler;
   gpointer on_pre_engine_restart_handler_data;
   GDestroyNotify on_pre_engine_restart_handler_destroy_notify;
@@ -65,6 +72,8 @@ G_DEFINE_TYPE_WITH_CODE(
     G_TYPE_OBJECT,
     G_IMPLEMENT_INTERFACE(fl_plugin_registry_get_type(),
                           fl_engine_plugin_registry_iface_init))
+
+enum { kProp0, kPropBinaryMessenger, kPropLast };
 
 // Parse a locale into its components.
 static void parse_locale(const gchar* locale,
@@ -203,13 +212,9 @@ static uint32_t fl_engine_gl_get_fbo(void* user_data) {
 }
 
 static bool fl_engine_gl_present(void* user_data) {
-  FlEngine* self = static_cast<FlEngine*>(user_data);
-  g_autoptr(GError) error = nullptr;
-  gboolean result = fl_renderer_present(self->renderer, &error);
-  if (!result) {
-    g_warning("%s", error->message);
-  }
-  return result;
+  // No action required, as this is handled in
+  // compositor_present_layers_callback.
+  return true;
 }
 
 static bool fl_engine_gl_make_resource_current(void* user_data) {
@@ -228,18 +233,39 @@ static bool fl_engine_gl_external_texture_frame_callback(
     int64_t texture_id,
     size_t width,
     size_t height,
-    FlutterOpenGLTexture* texture) {
+    FlutterOpenGLTexture* opengl_texture) {
   FlEngine* self = static_cast<FlEngine*>(user_data);
   if (!self->texture_registrar) {
     return false;
   }
+
+  FlTexture* texture =
+      fl_texture_registrar_lookup_texture(self->texture_registrar, texture_id);
+  if (texture == nullptr) {
+    g_warning("Unable to find texture %" G_GINT64_FORMAT, texture_id);
+    return false;
+  }
+
+  gboolean result;
   g_autoptr(GError) error = nullptr;
-  gboolean result = fl_texture_registrar_populate_gl_external_texture(
-      self->texture_registrar, texture_id, width, height, texture, &error);
+  if (FL_IS_TEXTURE_GL(texture)) {
+    result = fl_texture_gl_populate(FL_TEXTURE_GL(texture), width, height,
+                                    opengl_texture, &error);
+  } else if (FL_IS_PIXEL_BUFFER_TEXTURE(texture)) {
+    result =
+        fl_pixel_buffer_texture_populate(FL_PIXEL_BUFFER_TEXTURE(texture),
+                                         width, height, opengl_texture, &error);
+  } else {
+    g_warning("Unsupported texture type %" G_GINT64_FORMAT, texture_id);
+    return false;
+  }
+
   if (!result) {
     g_warning("%s", error->message);
+    return false;
   }
-  return result;
+
+  return true;
 }
 
 // Called by the engine to determine if it is on the GTK thread.
@@ -288,7 +314,7 @@ static void fl_engine_update_semantics_node_cb(const FlutterSemanticsNode* node,
   }
 }
 
-// Called when the engine is restarted.
+// Called right before the engine is restarted.
 //
 // This method should reset states to as if the engine has just been started,
 // which usually indicates the user has requested a hot restart (Shift-R in the
@@ -325,6 +351,22 @@ static FlPluginRegistrar* fl_engine_get_registrar_for_plugin(
 static void fl_engine_plugin_registry_iface_init(
     FlPluginRegistryInterface* iface) {
   iface->get_registrar_for_plugin = fl_engine_get_registrar_for_plugin;
+}
+
+static void fl_engine_set_property(GObject* object,
+                                   guint prop_id,
+                                   const GValue* value,
+                                   GParamSpec* pspec) {
+  FlEngine* self = FL_ENGINE(object);
+  switch (prop_id) {
+    case kPropBinaryMessenger:
+      g_set_object(&self->binary_messenger,
+                   FL_BINARY_MESSENGER(g_value_get_object(value)));
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+      break;
+  }
 }
 
 static void fl_engine_dispose(GObject* object) {
@@ -373,6 +415,15 @@ static void fl_engine_dispose(GObject* object) {
 
 static void fl_engine_class_init(FlEngineClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = fl_engine_dispose;
+  G_OBJECT_CLASS(klass)->set_property = fl_engine_set_property;
+
+  g_object_class_install_property(
+      G_OBJECT_CLASS(klass), kPropBinaryMessenger,
+      g_param_spec_object(
+          "binary-messenger", "messenger", "Binary messenger",
+          fl_binary_messenger_get_type(),
+          static_cast<GParamFlags>(G_PARAM_WRITABLE | G_PARAM_CONSTRUCT_ONLY |
+                                   G_PARAM_STATIC_STRINGS)));
 }
 
 static void fl_engine_init(FlEngine* self) {
@@ -382,7 +433,6 @@ static void fl_engine_init(FlEngine* self) {
   FlutterEngineGetProcAddresses(&self->embedder_api);
 
   self->texture_registrar = fl_texture_registrar_new(self);
-  self->binary_messenger = fl_binary_messenger_new(self);
 }
 
 FlEngine* fl_engine_new(FlDartProject* project, FlRenderer* renderer) {
@@ -392,6 +442,7 @@ FlEngine* fl_engine_new(FlDartProject* project, FlRenderer* renderer) {
   FlEngine* self = FL_ENGINE(g_object_new(fl_engine_get_type(), nullptr));
   self->project = FL_DART_PROJECT(g_object_ref(project));
   self->renderer = FL_RENDERER(g_object_ref(renderer));
+  self->binary_messenger = fl_binary_messenger_new(self);
   return self;
 }
 
@@ -497,12 +548,14 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
 
   setup_locales(self);
 
-  self->settings_plugin = fl_settings_plugin_new(self->binary_messenger);
-  fl_settings_plugin_start(self->settings_plugin);
+  g_autoptr(FlSettings) settings = fl_settings_new();
+  self->settings_plugin = fl_settings_plugin_new(self);
+  fl_settings_plugin_start(self->settings_plugin, settings);
 
   result = self->embedder_api.UpdateSemanticsEnabled(self->engine, TRUE);
-  if (result != kSuccess)
+  if (result != kSuccess) {
     g_warning("Failed to enable accessibility features on Flutter engine");
+  }
 
   return TRUE;
 }
@@ -708,6 +761,37 @@ void fl_engine_send_mouse_pointer_event(FlEngine* self,
   fl_event.scroll_delta_y = scroll_delta_y;
   fl_event.device_kind = kFlutterPointerDeviceKindMouse;
   fl_event.buttons = buttons;
+  fl_event.device = kMousePointerDeviceId;
+  self->embedder_api.SendPointerEvent(self->engine, &fl_event, 1);
+}
+
+void fl_engine_send_pointer_pan_zoom_event(FlEngine* self,
+                                           size_t timestamp,
+                                           double x,
+                                           double y,
+                                           FlutterPointerPhase phase,
+                                           double pan_x,
+                                           double pan_y,
+                                           double scale,
+                                           double rotation) {
+  g_return_if_fail(FL_IS_ENGINE(self));
+
+  if (self->engine == nullptr) {
+    return;
+  }
+
+  FlutterPointerEvent fl_event = {};
+  fl_event.struct_size = sizeof(fl_event);
+  fl_event.timestamp = timestamp;
+  fl_event.x = x;
+  fl_event.y = y;
+  fl_event.phase = phase;
+  fl_event.pan_x = pan_x;
+  fl_event.pan_y = pan_y;
+  fl_event.scale = scale;
+  fl_event.rotation = rotation;
+  fl_event.device = kPointerPanZoomDeviceId;
+  fl_event.device_kind = kFlutterPointerDeviceKindTrackpad;
   self->embedder_api.SendPointerEvent(self->engine, &fl_event, 1);
 }
 
@@ -786,4 +870,15 @@ G_MODULE_EXPORT FlTextureRegistrar* fl_engine_get_texture_registrar(
     FlEngine* self) {
   g_return_val_if_fail(FL_IS_ENGINE(self), nullptr);
   return self->texture_registrar;
+}
+
+void fl_engine_update_accessibility_features(FlEngine* self, int32_t flags) {
+  g_return_if_fail(FL_IS_ENGINE(self));
+
+  if (self->engine == nullptr) {
+    return;
+  }
+
+  self->embedder_api.UpdateAccessibilityFeatures(
+      self->engine, static_cast<FlutterAccessibilityFeature>(flags));
 }

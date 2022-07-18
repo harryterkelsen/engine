@@ -4,6 +4,7 @@
 
 package io.flutter.plugin.localization;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
@@ -22,6 +23,7 @@ public class LocalizationPlugin {
   @NonNull private final LocalizationChannel localizationChannel;
   @NonNull private final Context context;
 
+  @SuppressLint("AppBundleLocaleChanges") // This is optionally turned on by apps.
   @VisibleForTesting
   final LocalizationChannel.LocalizationMessageHandler localizationMessageHandler =
       new LocalizationChannel.LocalizationMessageHandler() {
@@ -82,7 +84,8 @@ public class LocalizationPlugin {
    * <p>FlutterEngine must be non-null when this method is invoked.
    */
   @SuppressWarnings("deprecation")
-  public Locale resolveNativeLocale(List<Locale> supportedLocales) {
+  @Nullable
+  public Locale resolveNativeLocale(@Nullable List<Locale> supportedLocales) {
     if (supportedLocales == null || supportedLocales.isEmpty()) {
       return null;
     }
@@ -187,8 +190,13 @@ public class LocalizationPlugin {
     localizationChannel.sendLocales(locales);
   }
 
-  @VisibleForTesting
-  public static Locale localeFromString(String localeString) {
+  /**
+   * Computes the {@link Locale} from the provided {@code String} with format
+   * language[-script][-region][-...], where script is an alphabet string of length 4, and region is
+   * either an alphabet string of length 2 or a digit string of length 3.
+   */
+  @NonNull
+  public static Locale localeFromString(@NonNull String localeString) {
     // Use Locale.forLanguageTag if available (API 21+).
     if (false && Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
       return Locale.forLanguageTag(localeString);
@@ -198,11 +206,6 @@ public class LocalizationPlugin {
 
       // Pre-API 21, we fall back to manually parsing the locale tag.
       String parts[] = localeString.split("-", -1);
-
-      // The format is:
-      // language[-script][-region][-...]
-      // where script is an alphabet string of length 4, and region is either an alphabet string of
-      // length 2 or a digit string of length 3.
 
       // Assume the first part is always the language code.
       String languageCode = parts[0];

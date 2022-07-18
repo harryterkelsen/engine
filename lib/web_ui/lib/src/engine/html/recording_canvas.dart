@@ -11,7 +11,7 @@ import '../engine_canvas.dart';
 import '../picture.dart';
 import '../rrect_renderer.dart';
 import '../shadow.dart';
-import '../text/paragraph.dart';
+import '../text/canvas_paragraph.dart';
 import '../util.dart';
 import '../vector_math.dart';
 import 'bitmap_canvas.dart';
@@ -293,6 +293,8 @@ class RecordingCanvas {
     _commands.add(PaintTransform(matrix4));
   }
 
+  Float32List getCurrentMatrixUnsafe() => _paintBounds._currentMatrix.storage;
+
   void skew(double sx, double sy) {
     assert(!_recordingEnded);
     renderStrategy.hasArbitraryPaint = true;
@@ -330,6 +332,8 @@ class RecordingCanvas {
     renderStrategy.hasArbitraryPaint = true;
     _commands.add(command);
   }
+
+  ui.Rect? getDestinationClipBounds() => _paintBounds.getDestinationClipBounds();
 
   void drawColor(ui.Color color, ui.BlendMode blendMode) {
     assert(!_recordingEnded);
@@ -584,7 +588,7 @@ class RecordingCanvas {
 
   void drawParagraph(ui.Paragraph paragraph, ui.Offset offset) {
     assert(!_recordingEnded);
-    final EngineParagraph engineParagraph = paragraph as EngineParagraph;
+    final CanvasParagraph engineParagraph = paragraph as CanvasParagraph;
     if (!engineParagraph.isLaidOut) {
       // Ignore non-laid out paragraphs. This matches Flutter's behavior.
       return;
@@ -595,17 +599,18 @@ class RecordingCanvas {
       renderStrategy.hasArbitraryPaint = true;
     }
     renderStrategy.hasParagraphs = true;
-    final double left = offset.dx;
-    final double top = offset.dy;
     final PaintDrawParagraph command =
         PaintDrawParagraph(engineParagraph, offset);
+
+    final ui.Rect paragraphBounds = engineParagraph.paintBounds;
     _paintBounds.growLTRB(
-      left,
-      top,
-      left + engineParagraph.width,
-      top + engineParagraph.height,
+      offset.dx + paragraphBounds.left,
+      offset.dy + paragraphBounds.top,
+      offset.dx + paragraphBounds.right,
+      offset.dy + paragraphBounds.bottom,
       command,
     );
+
     _commands.add(command);
   }
 
@@ -1238,7 +1243,7 @@ class PaintDrawImageRect extends DrawCommand {
 }
 
 class PaintDrawParagraph extends DrawCommand {
-  final EngineParagraph paragraph;
+  final CanvasParagraph paragraph;
   final ui.Offset offset;
 
   PaintDrawParagraph(this.paragraph, this.offset);
@@ -1717,7 +1722,7 @@ class _PaintBounds {
     if (sx != 1.0 || sy != 1.0) {
       _currentMatrixIsIdentity = false;
     }
-    _currentMatrix.scale(sx, sy);
+    _currentMatrix.scale(sx, sy, 1.0);
   }
 
   void rotateZ(double radians) {
@@ -1796,6 +1801,19 @@ class _PaintBounds {
       command.topBound = _currentClipTop;
       command.rightBound = _currentClipRight;
       command.bottomBound = _currentClipBottom;
+    }
+  }
+
+  ui.Rect? getDestinationClipBounds() {
+    if (!_clipRectInitialized) {
+      return null;
+    } else {
+      return ui.Rect.fromLTRB(
+        _currentClipLeft,
+        _currentClipTop,
+        _currentClipRight,
+        _currentClipBottom,
+      );
     }
   }
 

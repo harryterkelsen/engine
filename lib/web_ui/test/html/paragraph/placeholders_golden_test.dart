@@ -92,7 +92,7 @@ Future<void> testMain() async {
   });
 
   test('draws paragraphs with placeholders and text align in DOM mode', () {
-    final DomCanvas canvas = DomCanvas(domRenderer.createElement('flt-picture'));
+    final DomCanvas canvas = DomCanvas(domDocument.createElement('flt-picture'));
 
     const List<TextAlign> aligns = <TextAlign>[
       TextAlign.left,
@@ -192,14 +192,4 @@ void surroundParagraph(
   final Rect rect = offset & Size(paragraph.width, paragraph.height);
   final SurfacePaint paint = SurfacePaint()..color = blue..style = PaintingStyle.stroke;
   canvas.drawRect(rect, paint.paintData);
-}
-
-void fillPlaceholder(
-  EngineCanvas canvas,
-  Offset offset,
-  CanvasParagraph paragraph,
-) {
-  final TextBox placeholderBox = paragraph.getBoxesForPlaceholders().single;
-  final SurfacePaint paint = SurfacePaint()..color = red;
-  canvas.drawRect(placeholderBox.toRect().shift(offset), paint.paintData);
 }

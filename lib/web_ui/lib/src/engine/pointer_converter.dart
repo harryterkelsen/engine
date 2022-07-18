@@ -613,10 +613,17 @@ class PointerDataConverter {
           );
           _pointers.remove(device);
           break;
+        case ui.PointerChange.panZoomStart:
+        case ui.PointerChange.panZoomUpdate:
+        case ui.PointerChange.panZoomEnd:
+          // Pointer pan/zoom events are not generated on web.
+          assert(false);
+          break;
       }
     } else {
       switch (signalKind) {
         case ui.PointerSignalKind.scroll:
+        case ui.PointerSignalKind.scrollInertiaCancel:
           final bool alreadyAdded = _pointers.containsKey(device);
           _ensureStateForPointer(device, physicalX, physicalY);
           if (!alreadyAdded) {

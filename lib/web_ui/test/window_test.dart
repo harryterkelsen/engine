@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:html' as html;
 import 'dart:js_util' as js_util;
 
 import 'package:test/bootstrap/browser.dart';
@@ -30,13 +29,39 @@ void main() {
 void testMain() {
   late EngineSingletonFlutterWindow window;
 
+  setUpAll(() async {
+    await initializeEngine();
+  });
+
   setUp(() {
-    ui.webOnlyInitializeEngine();
     window = EngineSingletonFlutterWindow(0, EnginePlatformDispatcher.instance);
   });
 
   tearDown(() async {
     await window.resetHistory();
+  });
+
+  test('window.defaultRouteName should work with JsUrlStrategy', () async {
+    dynamic state = <dynamic, dynamic>{};
+    final JsUrlStrategy jsUrlStrategy = JsUrlStrategy(
+        getPath: allowInterop(() => '/initial'),
+        getState: allowInterop(() => state),
+        addPopStateListener: allowInterop((DomEventListener listener) => () {}),
+        prepareExternalUrl: allowInterop((String value) => ''),
+        pushState: allowInterop((Object? newState, String title, String url) {
+          expect(newState is Map, true);
+        }),
+        replaceState: allowInterop((Object? newState, String title, String url) {
+          expect(newState is Map, true);
+          state = newState;
+        }),
+        go: allowInterop(([int? delta]) async {
+          expect(delta, -1);
+        }));
+    final CustomUrlStrategy strategy =
+        CustomUrlStrategy.fromJs(jsUrlStrategy);
+    await window.debugInitializeHistory(strategy, useSingle: true);
+    expect(window.defaultRouteName, '/initial');
   });
 
   test('window.defaultRouteName should not change', () async {
@@ -140,7 +165,7 @@ void testMain() {
     ), useSingle: false);
     expect(window.browserHistory, isA<MultiEntriesBrowserHistory>());
     final List<String> executionOrder = <String>[];
-    window.handleNavigationMessage(
+    await window.handleNavigationMessage(
       const JSONMethodCodec().encodeMethodCall(const MethodCall(
         'selectSingleEntryHistory',
         null,
@@ -148,7 +173,7 @@ void testMain() {
     ).then<void>((bool data) {
       executionOrder.add('1');
     });
-    window.handleNavigationMessage(
+    await window.handleNavigationMessage(
       const JSONMethodCodec().encodeMethodCall(const MethodCall(
         'selectMultiEntryHistory',
         null,
@@ -156,7 +181,7 @@ void testMain() {
     ).then<void>((bool data) {
       executionOrder.add('2');
     });
-    window.handleNavigationMessage(
+    await window.handleNavigationMessage(
         const JSONMethodCodec().encodeMethodCall(const MethodCall(
         'selectSingleEntryHistory',
         null,
@@ -445,8 +470,8 @@ void testMain() {
 }
 
 void jsSetUrlStrategy(dynamic strategy) {
-  js_util.callMethod(
-    html.window,
+  js_util.callMethod<void>(
+    domWindow,
     '_flutter_web_set_location_strategy',
     <dynamic>[strategy],
   );

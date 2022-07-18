@@ -2,12 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
-
 import 'package:ui/ui.dart' as ui;
 
 import '../browser_detection.dart';
+import '../configuration.dart';
+import '../dom.dart';
 import '../platform_dispatcher.dart';
+import '../safe_browser_api.dart';
 import '../util.dart';
 import '../window.dart';
 import 'canvas.dart';
@@ -15,6 +16,11 @@ import 'canvaskit_api.dart';
 import 'initialization.dart';
 import 'surface_factory.dart';
 import 'util.dart';
+
+// Only supported in profile/release mode. Allows Flutter to use MSAA but
+// removes the ability for disabling AA on Paint objects.
+const bool _kUsingMSAA =
+    bool.fromEnvironment('flutter.canvaskit.msaa', defaultValue: false);
 
 typedef SubmitCallback = bool Function(SurfaceFrame, CkCanvas);
 
@@ -64,7 +70,7 @@ class Surface {
   /// We must cache this function because each time we access the tear-off it
   /// creates a new object, meaning we won't be able to remove this listener
   /// later.
-  void Function(html.Event)? _cachedContextLostListener;
+  void Function(DomEvent)? _cachedContextLostListener;
 
   /// A cached copy of the most recently created `webglcontextrestored`
   /// listener.
@@ -72,7 +78,7 @@ class Surface {
   /// We must cache this function because each time we access the tear-off it
   /// creates a new object, meaning we won't be able to remove this listener
   /// later.
-  void Function(html.Event)? _cachedContextRestoredListener;
+  void Function(DomEvent)? _cachedContextRestoredListener;
 
   SkGrContext? _grContext;
   int? _glContext;
@@ -87,10 +93,10 @@ class Surface {
   /// Conversely, the canvas that lives inside this element can be swapped, for
   /// example, when the screen size changes, or when the WebGL context is lost
   /// due to the browser tab becoming dormant.
-  final html.Element htmlElement = html.Element.tag('flt-canvas-container');
+  final DomElement htmlElement = createDomElement('flt-canvas-container');
 
   /// The underlying `<canvas>` element used for this surface.
-  html.CanvasElement? htmlCanvas;
+  DomCanvasElement? htmlCanvas;
   int _pixelWidth = -1;
   int _pixelHeight = -1;
 
@@ -112,7 +118,7 @@ class Surface {
   ///
   /// The given [size] is in physical pixels.
   SurfaceFrame acquireFrame(ui.Size size) {
-    final CkSurface surface = createOrUpdateSurfaces(size);
+    final CkSurface surface = createOrUpdateSurface(size);
 
     // ignore: prefer_function_declarations_over_variables
     final SubmitCallback submitCallback =
@@ -125,7 +131,7 @@ class Surface {
 
   void addToScene() {
     if (!_addedToScene) {
-      skiaSceneHost!.children.insert(0, htmlElement);
+      skiaSceneHost!.prepend(htmlElement);
     }
     _addedToScene = true;
   }
@@ -135,7 +141,12 @@ class Surface {
   double _currentDevicePixelRatio = -1;
 
   /// Creates a <canvas> and SkSurface for the given [size].
-  CkSurface createOrUpdateSurfaces(ui.Size size) {
+  CkSurface createOrUpdateSurface(ui.Size size) {
+    if (useH5vccCanvasKit) {
+      _surface ??= CkSurface(canvasKit.getH5vccSkSurface(), null);
+      return _surface!;
+    }
+
     if (size.isEmpty) {
       throw CanvasKitError('Cannot create surfaces of empty size.');
     }
@@ -153,8 +164,6 @@ class Surface {
       }
       return _surface!;
     }
-
-    _currentDevicePixelRatio = window.devicePixelRatio;
 
     // If the current canvas size is smaller than the requested size then create
     // a new, larger, canvas. Then update the GR context so we can create a new
@@ -177,8 +186,11 @@ class Surface {
 
       _createNewCanvas(newSize);
       _currentCanvasPhysicalSize = newSize;
+    } else if (window.devicePixelRatio != _currentDevicePixelRatio) {
+      _updateLogicalHtmlCanvasSize();
     }
 
+    _currentDevicePixelRatio = window.devicePixelRatio;
     _currentSurfaceSize = size;
     _translateCanvas();
     return _surface = _createNewSurface(size);
@@ -196,9 +208,9 @@ class Surface {
   void _updateLogicalHtmlCanvasSize() {
     final double logicalWidth = _pixelWidth / window.devicePixelRatio;
     final double logicalHeight = _pixelHeight / window.devicePixelRatio;
-    htmlCanvas!.style
-      ..width = '${logicalWidth}px'
-      ..height = '${logicalHeight}px';
+    final DomCSSStyleDeclaration style = htmlCanvas!.style;
+    style.width = '${logicalWidth}px';
+    style.height = '${logicalHeight}px';
   }
 
   /// Translate the canvas so the surface covers the visible portion of the
@@ -216,7 +228,7 @@ class Surface {
     htmlCanvas!.style.transform = 'translate(0, -${offset}px)';
   }
 
-  void _contextRestoredListener(html.Event event) {
+  void _contextRestoredListener(DomEvent event) {
     assert(
         _contextLost,
         'Received "webglcontextrestored" event but never received '
@@ -228,7 +240,7 @@ class Surface {
     event.preventDefault();
   }
 
-  void _contextLostListener(html.Event event) {
+  void _contextLostListener(DomEvent event) {
     assert(event.target == htmlCanvas,
         'Received a context lost event for a disposed canvas');
     final SurfaceFactory factory = SurfaceFactory.instance;
@@ -266,11 +278,23 @@ class Surface {
     // we ensure that the rendred picture covers the entire browser window.
     _pixelWidth = physicalSize.width.ceil();
     _pixelHeight = physicalSize.height.ceil();
-    final html.CanvasElement htmlCanvas = html.CanvasElement(
+    final DomCanvasElement htmlCanvas = createDomCanvasElement(
       width: _pixelWidth,
       height: _pixelHeight,
     );
     this.htmlCanvas = htmlCanvas;
+
+    // The DOM elements used to render pictures are used purely to put pixels on
+    // the screen. They have no semantic information. If an assistive technology
+    // attempts to scan picture content it will look like garbage and confuse
+    // users. UI semantics are exported as a separate DOM tree rendered parallel
+    // to pictures.
+    //
+    // Why are layer and scene elements not hidden from ARIA? Because those
+    // elements may contain platform views, and platform views must be
+    // accessible.
+    htmlCanvas.setAttribute('aria-hidden', 'true');
+
     htmlCanvas.style.position = 'absolute';
     _updateLogicalHtmlCanvasSize();
 
@@ -280,8 +304,8 @@ class Surface {
     // notification. When we receive this notification we force a new context.
     //
     // See also: https://www.khronos.org/webgl/wiki/HandlingContextLost
-    _cachedContextRestoredListener = _contextRestoredListener;
-    _cachedContextLostListener = _contextLostListener;
+    _cachedContextRestoredListener = allowInterop(_contextRestoredListener);
+    _cachedContextLostListener = allowInterop(_contextLostListener);
     htmlCanvas.addEventListener(
       'webglcontextlost',
       _cachedContextLostListener,
@@ -295,13 +319,13 @@ class Surface {
     _forceNewContext = false;
     _contextLost = false;
 
-    if (webGLVersion != -1 && !canvasKitForceCpuOnly) {
+    if (webGLVersion != -1 && !configuration.canvasKitForceCpuOnly) {
       final int glContext = canvasKit.GetWebGLContext(
         htmlCanvas,
         SkWebGLContextOptions(
           // Default to no anti-aliasing. Paint commands can be explicitly
           // anti-aliased by setting their `Paint` object's `antialias` property.
-          antialias: 0,
+          antialias: _kUsingMSAA ? 1 : 0,
           majorVersion: webGLVersion,
         ),
       );
@@ -328,7 +352,7 @@ class Surface {
     if (webGLVersion == -1) {
       return _makeSoftwareCanvasSurface(
           htmlCanvas!, 'WebGL support not detected');
-    } else if (canvasKitForceCpuOnly) {
+    } else if (configuration.canvasKitForceCpuOnly) {
       return _makeSoftwareCanvasSurface(
           htmlCanvas!, 'CPU rendering forced by application');
     } else if (_glContext == 0) {
@@ -354,7 +378,7 @@ class Surface {
   static bool _didWarnAboutWebGlInitializationFailure = false;
 
   CkSurface _makeSoftwareCanvasSurface(
-      html.CanvasElement htmlCanvas, String reason) {
+      DomCanvasElement htmlCanvas, String reason) {
     if (!_didWarnAboutWebGlInitializationFailure) {
       printWarning('WARNING: Falling back to CPU-only rendering. $reason.');
       _didWarnAboutWebGlInitializationFailure = true;
@@ -384,31 +408,36 @@ class Surface {
 
 /// A Dart wrapper around Skia's CkSurface.
 class CkSurface {
-  final SkSurface _surface;
-  final int? _glContext;
-
-  CkSurface(this._surface, this._glContext);
+  CkSurface(this.surface, this._glContext);
 
   CkCanvas getCanvas() {
     assert(!_isDisposed, 'Attempting to use the canvas of a disposed surface');
-    return CkCanvas(_surface.getCanvas());
+    return CkCanvas(surface.getCanvas());
   }
+
+  /// The underlying CanvasKit surface object.
+  ///
+  /// Only borrow this value temporarily. Do not store it as it may be deleted
+  /// at any moment. Storing it may lead to dangling pointer bugs.
+  final SkSurface surface;
+
+  final int? _glContext;
 
   /// Flushes the graphics to be rendered on screen.
   void flush() {
-    _surface.flush();
+    surface.flush();
   }
 
   int? get context => _glContext;
 
-  int width() => _surface.width();
-  int height() => _surface.height();
+  int width() => surface.width();
+  int height() => surface.height();
 
   void dispose() {
     if (_isDisposed) {
       return;
     }
-    _surface.dispose();
+    surface.dispose();
     _isDisposed = true;
   }
 

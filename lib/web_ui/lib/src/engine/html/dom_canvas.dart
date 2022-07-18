@@ -2,29 +2,28 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ui/ui.dart' as ui;
 
-import '../../engine.dart' show NullTreeSanitizer;
 import '../browser_detection.dart';
-import '../dom_renderer.dart';
+import '../dom.dart';
 import '../engine_canvas.dart';
-import '../html_image_codec.dart';
-import '../text/paragraph.dart';
+import '../svg.dart';
+import '../text/canvas_paragraph.dart';
 import '../util.dart';
 import '../vector_math.dart';
 import 'painting.dart';
 import 'path/path.dart';
 import 'path/path_to_svg.dart';
 import 'shaders/image_shader.dart';
+import 'shaders/shader.dart';
 
 /// A canvas that renders to DOM elements and CSS properties.
 class DomCanvas extends EngineCanvas with SaveElementStackTracking {
   @override
-  final html.Element rootElement;
+  final DomElement rootElement;
 
   DomCanvas(this.rootElement);
 
@@ -32,8 +31,7 @@ class DomCanvas extends EngineCanvas with SaveElementStackTracking {
   @override
   void clear() {
     super.clear();
-    // TODO(yjbanov): we should measure if reusing old elements is beneficial.
-    domRenderer.clearDom(rootElement);
+    removeAllChildren(rootElement);
   }
 
   @override
@@ -54,14 +52,14 @@ class DomCanvas extends EngineCanvas with SaveElementStackTracking {
   @override
   void drawColor(ui.Color color, ui.BlendMode blendMode) {
     // TODO(yjbanov): implement blendMode
-    final html.Element box = html.Element.tag('draw-color');
+    final DomElement box = createDomElement('draw-color');
     box.style
       ..position = 'absolute'
       ..top = '0'
       ..right = '0'
       ..bottom = '0'
       ..left = '0'
-      ..backgroundColor = colorToCssString(color);
+      ..backgroundColor = colorToCssString(color)!;
     currentElement.append(box);
   }
 
@@ -83,7 +81,7 @@ class DomCanvas extends EngineCanvas with SaveElementStackTracking {
 
   @override
   void drawRRect(ui.RRect rrect, SurfacePaintData paint) {
-    final html.Element element = buildDrawRectElement(
+    final DomElement element = buildDrawRectElement(
         rrect.outerRect, paint, 'draw-rrect', currentTransform);
     applyRRectBorderRadius(element.style, rrect);
     currentElement.append(element);
@@ -128,8 +126,8 @@ class DomCanvas extends EngineCanvas with SaveElementStackTracking {
 
   @override
   void drawParagraph(ui.Paragraph paragraph, ui.Offset offset) {
-    final html.Element paragraphElement = drawParagraphElement(
-        paragraph as EngineParagraph, offset,
+    final DomElement paragraphElement = drawParagraphElement(
+        paragraph as CanvasParagraph, offset,
         transform: currentTransform);
     currentElement.append(paragraphElement);
   }
@@ -162,11 +160,10 @@ ui.Color blurColor(ui.Color color, double sigma) {
   return ui.Color((reducedAlpha & 0xff) << 24 | (color.value & 0x00ffffff));
 }
 
-html.HtmlElement buildDrawRectElement(
+DomHTMLElement buildDrawRectElement(
     ui.Rect rect, SurfacePaintData paint, String tagName, Matrix4 transform) {
-  assert(paint.shader == null);
-  final html.HtmlElement rectangle =
-      domRenderer.createElement(tagName) as html.HtmlElement;
+  final DomHTMLElement rectangle = domDocument.createElement(tagName) as
+      DomHTMLElement;
   assert(() {
     rectangle.setAttribute('flt-rect', '$rect');
     rectangle.setAttribute('flt-paint', '$paint');
@@ -197,7 +194,7 @@ html.HtmlElement buildDrawRectElement(
     }
     effectiveTransform = matrix4ToCssTransform(translated);
   }
-  final html.CssStyleDeclaration style = rectangle.style;
+  final DomCSSStyleDeclaration style = rectangle.style;
   style
     ..position = 'absolute'
     ..transformOrigin = '0 0 0'
@@ -228,22 +225,31 @@ html.HtmlElement buildDrawRectElement(
     style
       ..width = '${right - left}px'
       ..height = '${bottom - top}px'
-      ..backgroundColor = cssColor;
-
-    if (paint.shader != null && paint.shader is EngineImageShader) {
-      _applyImageShaderToElement(rectangle, paint.shader! as EngineImageShader);
-    }
+      ..backgroundColor = cssColor
+      ..backgroundImage = _getBackgroundImageCssValue(paint.shader, rect);
   }
   return rectangle;
 }
 
-void _applyImageShaderToElement(html.HtmlElement targetElement,
-    EngineImageShader imageShader) {
-  final HtmlImage image = imageShader.image;
-  targetElement.style.backgroundImage = image.imgElement.src;
+String _getBackgroundImageCssValue(ui.Shader? shader, ui.Rect bounds) {
+  final String url = _getBackgroundImageUrl(shader, bounds);
+  return (url != '') ? "url('$url'": '';
 }
 
-void applyRRectBorderRadius(html.CssStyleDeclaration style, ui.RRect rrect) {
+String _getBackgroundImageUrl(ui.Shader? shader, ui.Rect bounds) {
+  if(shader != null) {
+    if(shader is EngineImageShader) {
+      return shader.image.imgElement.src ?? '';
+    }
+
+    if(shader is EngineGradient) {
+      return shader.createImageBitmap(bounds, 1, true) as String;
+    }
+  }
+  return '';
+}
+
+void applyRRectBorderRadius(DomCSSStyleDeclaration style, ui.RRect rrect) {
   if (rrect.tlRadiusX == rrect.trRadiusX &&
       rrect.tlRadiusX == rrect.blRadiusX &&
       rrect.tlRadiusX == rrect.brRadiusX &&
@@ -273,31 +279,33 @@ String _borderStrokeToCssUnit(double value) {
   return '${value.toStringAsFixed(3)}px';
 }
 
-html.Element pathToSvgElement(
+SVGSVGElement pathToSvgElement(
     SurfacePath path, SurfacePaintData paint, String width, String height) {
-  final StringBuffer sb = StringBuffer();
-  sb.write(
-      '<svg viewBox="0 0 $width $height" width="${width}px" height="${height}px">');
-  sb.write('<path ');
+  // In Firefox some SVG typed attributes are returned as null without a
+  // setter. So we use strings here.
+  final SVGSVGElement root = createSVGSVGElement()
+    ..setAttribute('width', '${width}px')
+    ..setAttribute('height', '${height}px')
+    ..setAttribute('viewBox', '0 0 $width $height');
+
+  final SVGPathElement svgPath = createSVGPathElement();
+  root.append(svgPath);
   final ui.Color color = paint.color ?? const ui.Color(0xFF000000);
   if (paint.style == ui.PaintingStyle.stroke ||
       (paint.style != ui.PaintingStyle.fill &&
           paint.strokeWidth != 0 &&
           paint.strokeWidth != null)) {
-    sb.write('stroke="${colorToCssString(color)}" ');
-    sb.write('stroke-width="${paint.strokeWidth ?? 1.0}" ');
-    sb.write('fill="none" ');
+    svgPath.setAttribute('stroke', colorToCssString(color)!);
+    svgPath.setAttribute('stroke-width', '${paint.strokeWidth ?? 1.0}');
+    svgPath.setAttribute('fill', 'none');
   } else if (paint.color != null) {
-    sb.write('fill="${colorToCssString(color)}" ');
+    svgPath.setAttribute('fill', colorToCssString(color)!);
   } else {
-    sb.write('fill="#000000" ');
+    svgPath.setAttribute('fill', '#000000');
   }
   if (path.fillType == ui.PathFillType.evenOdd) {
-    sb.write('fill-rule="evenodd" ');
+    svgPath.setAttribute('fill-rule', 'evenodd');
   }
-  sb.write('d="');
-  pathToSvg(path.pathRef, sb);
-  sb.write('"></path>');
-  sb.write('</svg>');
-  return html.Element.html(sb.toString(), treeSanitizer: NullTreeSanitizer());
+  svgPath.setAttribute('d', pathToSvg(path.pathRef));
+  return root;
 }

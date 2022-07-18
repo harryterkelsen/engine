@@ -21,23 +21,24 @@ import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.content.res.XmlResourceParser;
 import android.os.Bundle;
+import androidx.test.core.app.ApplicationProvider;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.io.StringReader;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.stubbing.Answer;
-import org.robolectric.RobolectricTestRunner;
-import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
 @Config(manifest = Config.NONE)
-@RunWith(RobolectricTestRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class ApplicationInfoLoaderTest {
 
   @Test
   public void itGeneratesCorrectApplicationInfoWithDefaultManifest() {
-    FlutterApplicationInfo info = ApplicationInfoLoader.load(RuntimeEnvironment.application);
+    FlutterApplicationInfo info =
+        ApplicationInfoLoader.load(ApplicationProvider.getApplicationContext());
     assertNotNull(info);
     assertEquals("libapp.so", info.aotSharedLibraryName);
     assertEquals("vm_snapshot_data", info.vmSnapshotData);

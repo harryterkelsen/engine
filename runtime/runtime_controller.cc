@@ -48,7 +48,17 @@ std::unique_ptr<RuntimeController> RuntimeController::Spawn(
     const std::function<void(int64_t)>& p_idle_notification_callback,
     const fml::closure& p_isolate_create_callback,
     const fml::closure& p_isolate_shutdown_callback,
-    std::shared_ptr<const fml::Mapping> p_persistent_isolate_data) const {
+    std::shared_ptr<const fml::Mapping> p_persistent_isolate_data,
+    fml::WeakPtr<IOManager> io_manager,
+    fml::WeakPtr<ImageDecoder> image_decoder,
+    fml::WeakPtr<ImageGeneratorRegistry> image_generator_registry,
+    fml::WeakPtr<SnapshotDelegate> snapshot_delegate) const {
+  UIDartState::Context spawned_context{
+      context_.task_runners,         std::move(snapshot_delegate),
+      std::move(io_manager),         context_.unref_queue,
+      std::move(image_decoder),      std::move(image_generator_registry),
+      advisory_script_uri,           advisory_script_entrypoint,
+      context_.volatile_path_tracker};
   auto result =
       std::make_unique<RuntimeController>(p_client,                      //
                                           vm_,                           //
@@ -58,8 +68,9 @@ std::unique_ptr<RuntimeController> RuntimeController::Spawn(
                                           p_isolate_create_callback,     //
                                           p_isolate_shutdown_callback,   //
                                           p_persistent_isolate_data,     //
-                                          context_);                     //
+                                          spawned_context);              //
   result->spawning_isolate_ = root_isolate_;
+  result->platform_data_.viewport_metrics = ViewportMetrics();
   return result;
 }
 
@@ -196,7 +207,7 @@ bool RuntimeController::ReportTimings(std::vector<int64_t> timings) {
   return false;
 }
 
-bool RuntimeController::NotifyIdle(int64_t deadline) {
+bool RuntimeController::NotifyIdle(fml::TimePoint deadline) {
   std::shared_ptr<DartIsolate> root_isolate = root_isolate_.lock();
   if (!root_isolate) {
     return false;
@@ -204,12 +215,12 @@ bool RuntimeController::NotifyIdle(int64_t deadline) {
 
   tonic::DartState::Scope scope(root_isolate);
 
-  Dart_NotifyIdle(deadline);
+  Dart_NotifyIdle(deadline.ToEpochDelta().ToMicroseconds());
 
   // Idle notifications being in isolate scope are part of the contract.
   if (idle_notification_callback_) {
     TRACE_EVENT0("flutter", "EmbedderIdleNotification");
-    idle_notification_callback_(deadline);
+    idle_notification_callback_(deadline.ToEpochDelta().ToMicroseconds());
   }
   return true;
 }
@@ -217,8 +228,7 @@ bool RuntimeController::NotifyIdle(int64_t deadline) {
 bool RuntimeController::DispatchPlatformMessage(
     std::unique_ptr<PlatformMessage> message) {
   if (auto* platform_configuration = GetPlatformConfigurationIfAvailable()) {
-    TRACE_EVENT1("flutter", "RuntimeController::DispatchPlatformMessage",
-                 "mode", "basic");
+    TRACE_EVENT0("flutter", "RuntimeController::DispatchPlatformMessage");
     platform_configuration->DispatchPlatformMessage(std::move(message));
     return true;
   }
@@ -229,26 +239,11 @@ bool RuntimeController::DispatchPlatformMessage(
 bool RuntimeController::DispatchPointerDataPacket(
     const PointerDataPacket& packet) {
   if (auto* platform_configuration = GetPlatformConfigurationIfAvailable()) {
-    TRACE_EVENT1("flutter", "RuntimeController::DispatchPointerDataPacket",
-                 "mode", "basic");
+    TRACE_EVENT0("flutter", "RuntimeController::DispatchPointerDataPacket");
     platform_configuration->get_window(0)->DispatchPointerDataPacket(packet);
     return true;
   }
 
-  return false;
-}
-
-bool RuntimeController::DispatchKeyDataPacket(const KeyDataPacket& packet,
-                                              KeyDataResponse callback) {
-  if (auto* platform_configuration = GetPlatformConfigurationIfAvailable()) {
-    TRACE_EVENT1("flutter", "RuntimeController::DispatchKeyDataPacket", "mode",
-                 "basic");
-    uint64_t response_id =
-        platform_configuration->RegisterKeyDataResponse(std::move(callback));
-    platform_configuration->get_window(0)->DispatchKeyDataPacket(packet,
-                                                                 response_id);
-    return true;
-  }
   return false;
 }
 
@@ -305,6 +300,11 @@ FontCollection& RuntimeController::GetFontCollection() {
   return client_.GetFontCollection();
 }
 
+// |PlatfromConfigurationClient|
+std::shared_ptr<AssetManager> RuntimeController::GetAssetManager() {
+  return client_.GetAssetManager();
+}
+
 // |PlatformConfigurationClient|
 void RuntimeController::UpdateIsolateDescription(const std::string isolate_name,
                                                  int64_t isolate_port) {
@@ -355,8 +355,10 @@ tonic::DartErrorHandleType RuntimeController::GetLastError() {
 
 bool RuntimeController::LaunchRootIsolate(
     const Settings& settings,
+    fml::closure root_isolate_create_callback,
     std::optional<std::string> dart_entrypoint,
     std::optional<std::string> dart_entrypoint_library,
+    const std::vector<std::string>& dart_entrypoint_args,
     std::unique_ptr<IsolateConfiguration> isolate_configuration) {
   if (root_isolate_.lock()) {
     FML_LOG(ERROR) << "Root isolate was already running.";
@@ -369,10 +371,12 @@ bool RuntimeController::LaunchRootIsolate(
           isolate_snapshot_,                              //
           std::make_unique<PlatformConfiguration>(this),  //
           DartIsolate::Flags{},                           //
+          root_isolate_create_callback,                   //
           isolate_create_callback_,                       //
           isolate_shutdown_callback_,                     //
           dart_entrypoint,                                //
           dart_entrypoint_library,                        //
+          dart_entrypoint_args,                           //
           std::move(isolate_configuration),               //
           context_,                                       //
           spawning_isolate_.lock().get())                 //

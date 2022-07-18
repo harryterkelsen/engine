@@ -14,7 +14,6 @@
 #include "flutter/fml/trace_event.h"
 #include "third_party/skia/include/gpu/GrBackendSemaphore.h"
 #include "third_party/skia/include/gpu/GrBackendSurface.h"
-#include "third_party/skia/include/gpu/GrDirectContext.h"
 #include "third_party/skia/include/gpu/vk/GrVkBackendContext.h"
 #include "third_party/skia/include/gpu/vk/GrVkExtensions.h"
 #include "third_party/skia/include/gpu/vk/GrVkTypes.h"
@@ -23,7 +22,6 @@ namespace flutter_runner {
 
 namespace {
 
-constexpr int kGrCacheMaxCount = 8192;
 // Tuning advice:
 // If you see the following 3 things happening simultaneously in a trace:
 //   * Over budget ("flutter", "GPURasterizer::Draw") durations
@@ -132,10 +130,12 @@ bool VulkanSurfaceProducer::Initialize(scenic::Session* scenic_session) {
   const char* device_extensions[] = {
       VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
   };
+  const int device_extensions_count =
+      sizeof(device_extensions) / sizeof(device_extensions[0]);
   GrVkExtensions vk_extensions;
   vk_extensions.init(backend_context.fGetProc, backend_context.fInstance,
                      backend_context.fPhysicalDevice, 0, nullptr,
-                     countof(device_extensions), device_extensions);
+                     device_extensions_count, device_extensions);
   backend_context.fVkExtensions = &vk_extensions;
   GrContextOptions options;
   options.fReduceOpsTaskSplitting = GrContextOptions::Enable::kNo;
@@ -149,7 +149,7 @@ bool VulkanSurfaceProducer::Initialize(scenic::Session* scenic_session) {
   }
 
   // Use local limits specified in this file above instead of flutter defaults.
-  context_->setResourceCacheLimits(kGrCacheMaxCount, kGrCacheMaxByteSize);
+  context_->setResourceCacheLimit(kGrCacheMaxByteSize);
 
   surface_pool_ =
       std::make_unique<VulkanSurfacePool>(*this, context_, scenic_session);

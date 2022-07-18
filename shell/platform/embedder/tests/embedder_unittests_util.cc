@@ -6,6 +6,7 @@
 
 #include <limits>
 
+#include "flutter/shell/platform/embedder/tests/embedder_test_backingstore_producer.h"
 #include "flutter/shell/platform/embedder/tests/embedder_unittests_util.h"
 
 namespace flutter {
@@ -67,6 +68,61 @@ bool RasterImagesAreSame(sk_sp<SkImage> a, sk_sp<SkImage> b) {
   sk_sp<SkData> normalized_b = NormalizeImage(b);
 
   return normalized_a->equals(normalized_b.get());
+}
+
+std::string FixtureNameForBackend(EmbedderTestContextType backend,
+                                  const std::string& name) {
+  switch (backend) {
+    case EmbedderTestContextType::kVulkanContext:
+      return "vk_" + name;
+    default:
+      return name;
+  }
+}
+
+EmbedderTestBackingStoreProducer::RenderTargetType GetRenderTargetFromBackend(
+    EmbedderTestContextType backend,
+    bool opengl_framebuffer) {
+  switch (backend) {
+    case EmbedderTestContextType::kVulkanContext:
+      return EmbedderTestBackingStoreProducer::RenderTargetType::kVulkanImage;
+    case EmbedderTestContextType::kOpenGLContext:
+      if (opengl_framebuffer) {
+        return EmbedderTestBackingStoreProducer::RenderTargetType::
+            kOpenGLFramebuffer;
+      }
+      return EmbedderTestBackingStoreProducer::RenderTargetType::kOpenGLTexture;
+    case EmbedderTestContextType::kMetalContext:
+      return EmbedderTestBackingStoreProducer::RenderTargetType::kMetalTexture;
+    case EmbedderTestContextType::kSoftwareContext:
+      return EmbedderTestBackingStoreProducer::RenderTargetType::
+          kSoftwareBuffer;
+  }
+}
+
+void ConfigureBackingStore(FlutterBackingStore& backing_store,
+                           EmbedderTestContextType backend,
+                           bool opengl_framebuffer) {
+  switch (backend) {
+    case EmbedderTestContextType::kVulkanContext:
+      backing_store.type = kFlutterBackingStoreTypeVulkan;
+      break;
+    case EmbedderTestContextType::kOpenGLContext:
+      if (opengl_framebuffer) {
+        backing_store.type = kFlutterBackingStoreTypeOpenGL;
+        backing_store.open_gl.type = kFlutterOpenGLTargetTypeFramebuffer;
+      } else {
+        backing_store.type = kFlutterBackingStoreTypeOpenGL;
+        backing_store.open_gl.type = kFlutterOpenGLTargetTypeTexture;
+      }
+      break;
+    case EmbedderTestContextType::kMetalContext:
+      backing_store.type = kFlutterBackingStoreTypeMetal;
+      break;
+    case EmbedderTestContextType::kSoftwareContext:
+      backing_store.type = kFlutterBackingStoreTypeSoftware;
+      break;
+  }
 }
 
 bool WriteImageToDisk(const fml::UniqueFD& directory,
@@ -146,6 +202,53 @@ bool ImageMatchesFixture(const std::string& fixture_file_name,
 bool ImageMatchesFixture(const std::string& fixture_file_name,
                          std::future<sk_sp<SkImage>>& scene_image) {
   return ImageMatchesFixture(fixture_file_name, scene_image.get());
+}
+
+bool SurfacePixelDataMatchesBytes(SkSurface* surface,
+                                  const std::vector<uint8_t>& bytes) {
+  SkPixmap pixmap;
+  auto ok = surface->peekPixels(&pixmap);
+  if (!ok) {
+    return false;
+  }
+
+  auto matches = (pixmap.rowBytes() == bytes.size()) &&
+                 (memcmp(bytes.data(), pixmap.addr(), bytes.size()) == 0);
+
+  if (!matches) {
+    FML_LOG(ERROR) << "SkImage pixel data didn't match bytes.";
+
+    {
+      const uint8_t* addr = (const uint8_t*)pixmap.addr();
+      std::stringstream stream;
+      for (size_t i = 0; i < pixmap.computeByteSize(); ++i) {
+        stream << "0x" << std::setfill('0') << std::setw(2) << std::uppercase
+               << std::hex << static_cast<int>(addr[i]);
+        if (i != pixmap.computeByteSize() - 1) {
+          stream << ", ";
+        }
+      }
+      FML_LOG(ERROR) << "  Actual:   " << stream.str();
+    }
+    {
+      std::stringstream stream;
+      for (auto b = bytes.begin(); b != bytes.end(); ++b) {
+        stream << "0x" << std::setfill('0') << std::setw(2) << std::uppercase
+               << std::hex << static_cast<int>(*b);
+        if (b != bytes.end() - 1) {
+          stream << ", ";
+        }
+      }
+      FML_LOG(ERROR) << "  Expected: " << stream.str();
+    }
+  }
+
+  return matches;
+}
+
+bool SurfacePixelDataMatchesBytes(std::future<SkSurface*>& surface_future,
+                                  const std::vector<uint8_t>& bytes) {
+  return SurfacePixelDataMatchesBytes(surface_future.get(), bytes);
 }
 
 void FilterMutationsByType(

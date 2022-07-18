@@ -25,6 +25,8 @@ import io.flutter.embedding.engine.FlutterShellArgs;
 import io.flutter.embedding.engine.renderer.FlutterUiDisplayListener;
 import io.flutter.plugin.platform.PlatformPlugin;
 import io.flutter.util.ViewUtils;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * {@code Fragment} which displays a Flutter UI that takes up all available {@code Fragment} space.
@@ -92,7 +94,9 @@ import io.flutter.util.ViewUtils;
  * Activity}, as well as forwarding lifecycle calls from an {@code Activity} or a {@code Fragment}.
  */
 public class FlutterFragment extends Fragment
-    implements FlutterActivityAndFragmentDelegate.Host, ComponentCallbacks2 {
+    implements FlutterActivityAndFragmentDelegate.Host,
+        ComponentCallbacks2,
+        FlutterActivityAndFragmentDelegate.DelegateFactory {
   /**
    * The ID of the {@code FlutterView} created by this activity.
    *
@@ -105,6 +109,10 @@ public class FlutterFragment extends Fragment
 
   /** The Dart entrypoint method name that is executed upon initialization. */
   protected static final String ARG_DART_ENTRYPOINT = "dart_entrypoint";
+  /** The Dart entrypoint method's URI that is executed upon initialization. */
+  protected static final String ARG_DART_ENTRYPOINT_URI = "dart_entrypoint_uri";
+  /** The Dart entrypoint arguments that is executed upon initialization. */
+  protected static final String ARG_DART_ENTRYPOINT_ARGS = "dart_entrypoint_args";
   /** Initial Flutter route that is rendered in a Navigator widget. */
   protected static final String ARG_INITIAL_ROUTE = "initial_route";
   /** Whether the activity delegate should handle the deeplinking request. */
@@ -223,6 +231,8 @@ public class FlutterFragment extends Fragment
   public static class NewEngineFragmentBuilder {
     private final Class<? extends FlutterFragment> fragmentClass;
     private String dartEntrypoint = "main";
+    private String dartLibraryUri = null;
+    private List<String> dartEntrypointArgs;
     private String initialRoute = "/";
     private boolean handleDeeplinking = false;
     private String appBundlePath = null;
@@ -253,6 +263,19 @@ public class FlutterFragment extends Fragment
     @NonNull
     public NewEngineFragmentBuilder dartEntrypoint(@NonNull String dartEntrypoint) {
       this.dartEntrypoint = dartEntrypoint;
+      return this;
+    }
+
+    @NonNull
+    public NewEngineFragmentBuilder dartLibraryUri(@NonNull String dartLibraryUri) {
+      this.dartLibraryUri = dartLibraryUri;
+      return this;
+    }
+
+    /** Arguments passed as a list of string to Dart's entrypoint function. */
+    @NonNull
+    public NewEngineFragmentBuilder dartEntrypointArgs(@NonNull List<String> dartEntrypointArgs) {
+      this.dartEntrypointArgs = dartEntrypointArgs;
       return this;
     }
 
@@ -410,6 +433,10 @@ public class FlutterFragment extends Fragment
       args.putBoolean(ARG_HANDLE_DEEPLINKING, handleDeeplinking);
       args.putString(ARG_APP_BUNDLE_PATH, appBundlePath);
       args.putString(ARG_DART_ENTRYPOINT, dartEntrypoint);
+      args.putString(ARG_DART_ENTRYPOINT_URI, dartLibraryUri);
+      args.putStringArrayList(
+          ARG_DART_ENTRYPOINT_ARGS,
+          dartEntrypointArgs != null ? new ArrayList(dartEntrypointArgs) : null);
       // TODO(mattcarroll): determine if we should have an explicit FlutterTestFragment instead of
       // conflating.
       if (null != shellArgs) {
@@ -707,6 +734,14 @@ public class FlutterFragment extends Fragment
   // implementation for details about why it exists.
   @VisibleForTesting @Nullable /* package */ FlutterActivityAndFragmentDelegate delegate;
 
+  @NonNull private FlutterActivityAndFragmentDelegate.DelegateFactory delegateFactory = this;
+
+  /** Default delegate factory that creates a simple FlutterActivityAndFragmentDelegate instance. */
+  public FlutterActivityAndFragmentDelegate createDelegate(
+      FlutterActivityAndFragmentDelegate.Host host) {
+    return new FlutterActivityAndFragmentDelegate(host);
+  }
+
   private final OnBackPressedCallback onBackPressedCallback =
       new OnBackPressedCallback(true) {
         @Override
@@ -732,18 +767,30 @@ public class FlutterFragment extends Fragment
   // TODO(mattcarroll): remove this when tests allow for it
   // (https://github.com/flutter/flutter/issues/43798)
   @VisibleForTesting
-  /* package */ void setDelegate(@NonNull FlutterActivityAndFragmentDelegate delegate) {
-    this.delegate = delegate;
+  /* package */ void setDelegateFactory(
+      @NonNull FlutterActivityAndFragmentDelegate.DelegateFactory delegateFactory) {
+    this.delegateFactory = delegateFactory;
+    delegate = delegateFactory.createDelegate(this);
+  }
+
+  /**
+   * Returns the Android App Component exclusively attached to {@link
+   * io.flutter.embedding.engine.FlutterEngine}.
+   */
+  @Override
+  public ExclusiveAppComponent<Activity> getExclusiveAppComponent() {
+    return delegate;
   }
 
   @Override
   public void onAttach(@NonNull Context context) {
     super.onAttach(context);
-    delegate = new FlutterActivityAndFragmentDelegate(this);
+    delegate = delegateFactory.createDelegate(this);
     delegate.onAttach(context);
     if (getArguments().getBoolean(ARG_SHOULD_AUTOMATICALLY_HANDLE_ON_BACK_PRESSED, false)) {
       requireActivity().getOnBackPressedDispatcher().addCallback(this, onBackPressedCallback);
     }
+    context.registerComponentCallbacks(this);
   }
 
   @Override
@@ -784,7 +831,9 @@ public class FlutterFragment extends Fragment
   // possible.
   @ActivityCallThrough
   public void onPostResume() {
-    delegate.onPostResume();
+    if (stillAttachedForEvent("onPostResume")) {
+      delegate.onPostResume();
+    }
   }
 
   @Override
@@ -828,15 +877,16 @@ public class FlutterFragment extends Fragment
             + " connection to the engine "
             + getFlutterEngine()
             + " evicted by another attaching activity");
-    // Redundant calls are ok.
-    delegate.onDestroyView();
-    delegate.onDetach();
-    delegate.release();
-    delegate = null;
+    if (delegate != null) {
+      // Redundant calls are ok.
+      delegate.onDestroyView();
+      delegate.onDetach();
+    }
   }
 
   @Override
   public void onDetach() {
+    getContext().unregisterComponentCallbacks(this);
     super.onDetach();
     if (delegate != null) {
       delegate.onDetach();
@@ -945,19 +995,6 @@ public class FlutterFragment extends Fragment
   }
 
   /**
-   * Callback invoked when memory is low.
-   *
-   * <p>This implementation forwards a memory pressure warning to the running Flutter app.
-   */
-  @Override
-  public void onLowMemory() {
-    super.onLowMemory();
-    if (stillAttachedForEvent("onLowMemory")) {
-      delegate.onLowMemory();
-    }
-  }
-
-  /**
    * {@link FlutterActivityAndFragmentDelegate.Host} method that is used by {@link
    * FlutterActivityAndFragmentDelegate} to obtain Flutter shell arguments when initializing
    * Flutter.
@@ -1022,6 +1059,33 @@ public class FlutterFragment extends Fragment
   @NonNull
   public String getDartEntrypointFunctionName() {
     return getArguments().getString(ARG_DART_ENTRYPOINT, "main");
+  }
+
+  /**
+   * The Dart entrypoint arguments will be passed as a list of string to Dart's entrypoint function.
+   *
+   * <p>A value of null means do not pass any arguments to Dart's entrypoint function.
+   *
+   * <p>Subclasses may override this method to directly control the Dart entrypoint arguments.
+   */
+  @Override
+  @Nullable
+  public List<String> getDartEntrypointArgs() {
+    return getArguments().getStringArrayList(ARG_DART_ENTRYPOINT_ARGS);
+  }
+
+  /**
+   * Returns the library URI of the Dart method that this {@code FlutterFragment} should execute to
+   * start a Flutter app.
+   *
+   * <p>Defaults to null (example value: "package:foo/bar.dart").
+   *
+   * <p>Used by this {@code FlutterFragment}'s {@link FlutterActivityAndFragmentDelegate.Host}
+   */
+  @Override
+  @Nullable
+  public String getDartEntrypointLibraryUri() {
+    return getArguments().getString(ARG_DART_ENTRYPOINT_URI);
   }
 
   /**
@@ -1283,6 +1347,19 @@ public class FlutterFragment extends Fragment
   }
 
   /**
+   * Give the host application a chance to take control of the app lifecycle events.
+   *
+   * <p>Return {@code false} means the host application dispatches these app lifecycle events, while
+   * return {@code true} means the engine dispatches these events.
+   *
+   * <p>Defaults to {@code true}.
+   */
+  @Override
+  public boolean shouldDispatchAppLifecycleState() {
+    return true;
+  }
+
+  /**
    * {@inheritDoc}
    *
    * <p>Avoid overriding this method when using {@code
@@ -1317,6 +1394,10 @@ public class FlutterFragment extends Fragment
   private boolean stillAttachedForEvent(String event) {
     if (delegate == null) {
       Log.w(TAG, "FlutterFragment " + hashCode() + " " + event + " called after release.");
+      return false;
+    }
+    if (!delegate.isAttached()) {
+      Log.w(TAG, "FlutterFragment " + hashCode() + " " + event + " called after detach.");
       return false;
     }
     return true;

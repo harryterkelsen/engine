@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "flutter/flow/testing/mock_texture.h"
+#include "flutter/flow/testing/skia_gpu_object_layer_test.h"
 
 namespace flutter {
 namespace testing {
@@ -13,21 +14,22 @@ void MockTexture::Paint(SkCanvas& canvas,
                         const SkRect& bounds,
                         bool freeze,
                         GrDirectContext* context,
-                        const SkSamplingOptions& sampling) {
+                        const SkSamplingOptions& sampling,
+                        const SkPaint* paint) {
   paint_calls_.emplace_back(
-      PaintCall{canvas, bounds, freeze, context, sampling});
+      PaintCall{canvas, bounds, freeze, context, sampling, paint});
 }
 
 bool operator==(const MockTexture::PaintCall& a,
                 const MockTexture::PaintCall& b) {
   return &a.canvas == &b.canvas && a.bounds == b.bounds &&
          a.context == b.context && a.freeze == b.freeze &&
-         a.sampling == b.sampling;
+         a.sampling == b.sampling && a.paint == b.paint;
 }
 
 std::ostream& operator<<(std::ostream& os, const MockTexture::PaintCall& data) {
   return os << &data.canvas << " " << data.bounds << " " << data.context << " "
-            << data.freeze << " " << data.sampling;
+            << data.freeze << " " << data.sampling << " " << data.paint;
 }
 
 }  // namespace testing

@@ -10,6 +10,7 @@
 
 #include "flutter/shell/platform/common/accessibility_bridge.h"
 #import "flutter/shell/platform/darwin/macos/framework/Source/FlutterCompositor.h"
+#import "flutter/shell/platform/darwin/macos/framework/Source/FlutterPlatformViewController.h"
 #import "flutter/shell/platform/darwin/macos/framework/Source/FlutterRenderer.h"
 
 @interface FlutterEngine ()
@@ -37,6 +38,16 @@
  * semantics update through the embedder as soon as it is set to YES.
  */
 @property(nonatomic) BOOL semanticsEnabled;
+
+/**
+ * The executable name for the current process.
+ */
+@property(nonatomic, readonly, nonnull) NSString* executableName;
+
+/**
+ * This just returns the NSPasteboard so that it can be mocked in the tests.
+ */
+@property(nonatomic, readonly, nonnull) NSPasteboard* pasteboard;
 
 /**
  * Informs the engine that the associated view controller's view size has changed.
@@ -69,6 +80,8 @@
  * Unregisters an external texture with the given id. Returns YES on success.
  */
 - (BOOL)unregisterTextureWithID:(int64_t)textureID;
+
+- (nonnull FlutterPlatformViewController*)platformViewController;
 
 // Accessibility API.
 

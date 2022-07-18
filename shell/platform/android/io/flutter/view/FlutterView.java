@@ -43,13 +43,11 @@ import androidx.annotation.UiThread;
 import io.flutter.Log;
 import io.flutter.app.FlutterPluginRegistry;
 import io.flutter.embedding.android.AndroidTouchProcessor;
-import io.flutter.embedding.android.KeyChannelResponder;
 import io.flutter.embedding.android.KeyboardManager;
 import io.flutter.embedding.engine.dart.DartExecutor;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.embedding.engine.renderer.SurfaceTextureWrapper;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
-import io.flutter.embedding.engine.systemchannels.KeyEventChannel;
 import io.flutter.embedding.engine.systemchannels.LifecycleChannel;
 import io.flutter.embedding.engine.systemchannels.LocalizationChannel;
 import io.flutter.embedding.engine.systemchannels.MouseCursorChannel;
@@ -79,7 +77,10 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Deprecated
 public class FlutterView extends SurfaceView
-    implements BinaryMessenger, TextureRegistry, MouseCursorPlugin.MouseCursorViewDelegate {
+    implements BinaryMessenger,
+        TextureRegistry,
+        MouseCursorPlugin.MouseCursorViewDelegate,
+        KeyboardManager.ViewDelegate {
   /**
    * Interface for those objects that maintain and expose a reference to a {@code FlutterView} (such
    * as a full-screen Flutter activity).
@@ -122,7 +123,6 @@ public class FlutterView extends SurfaceView
   private final DartExecutor dartExecutor;
   private final FlutterRenderer flutterRenderer;
   private final NavigationChannel navigationChannel;
-  private final KeyEventChannel keyEventChannel;
   private final LifecycleChannel lifecycleChannel;
   private final LocalizationChannel localizationChannel;
   private final PlatformChannel platformChannel;
@@ -213,7 +213,6 @@ public class FlutterView extends SurfaceView
 
     // Create all platform channels
     navigationChannel = new NavigationChannel(dartExecutor);
-    keyEventChannel = new KeyEventChannel(dartExecutor);
     lifecycleChannel = new LifecycleChannel(dartExecutor);
     localizationChannel = new LocalizationChannel(dartExecutor);
     platformChannel = new PlatformChannel(dartExecutor);
@@ -234,11 +233,7 @@ public class FlutterView extends SurfaceView
         mNativeView.getPluginRegistry().getPlatformViewsController();
     mTextInputPlugin =
         new TextInputPlugin(this, new TextInputChannel(dartExecutor), platformViewsController);
-    mKeyboardManager =
-        new KeyboardManager(
-            this,
-            mTextInputPlugin,
-            new KeyChannelResponder[] {new KeyChannelResponder(keyEventChannel)});
+    mKeyboardManager = new KeyboardManager(this);
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
       mMouseCursorPlugin = new MouseCursorPlugin(this, new MouseCursorChannel(dartExecutor));
@@ -347,26 +342,11 @@ public class FlutterView extends SurfaceView
     mFirstFrameListeners.remove(listener);
   }
 
-  /**
-   * Updates this to support rendering as a transparent {@link SurfaceView}.
-   *
-   * <p>Sets it on top of its window. The background color still needs to be controlled from within
-   * the Flutter UI itself.
-   *
-   * @deprecated FlutterView in the v1 embedding is always a SurfaceView and will cover
-   *     accessibility highlights when transparent. Consider migrating to the v2 Android embedding,
-   *     using {@link io.flutter.embedding.android.FlutterView.RenderMode#texture}, and setting
-   *     {@link io.flutter.embedding.android.FlutterView.TransparencyMode#transparent}. See also
-   *     https://github.com/flutter/flutter/wiki/Upgrading-pre-1.12-Android-projects.
-   */
-  @Deprecated
-  public void enableTransparentBackground() {
-    Log.w(
-        TAG,
-        "FlutterView in the v1 embedding is always a SurfaceView and will cover accessibility highlights when transparent. Consider migrating to the v2 Android embedding. https://github.com/flutter/flutter/wiki/Upgrading-pre-1.12-Android-projects");
-    setZOrderOnTop(true);
-    getHolder().setFormat(PixelFormat.TRANSPARENT);
-  }
+  @Override
+  public void enableBufferingIncomingMessages() {}
+
+  @Override
+  public void disableBufferingIncomingMessages() {}
 
   /**
    * Reverts this back to the {@link SurfaceView} defaults, at the back of its window and opaque.
@@ -766,7 +746,10 @@ public class FlutterView extends SurfaceView
             mMetrics.systemGestureInsetRight,
             mMetrics.systemGestureInsetBottom,
             mMetrics.systemGestureInsetLeft,
-            mMetrics.physicalTouchSlop);
+            mMetrics.physicalTouchSlop,
+            new int[0],
+            new int[0],
+            new int[0]);
   }
 
   // Called by FlutterNativeView to notify first Flutter frame rendered.
@@ -835,12 +818,41 @@ public class FlutterView extends SurfaceView
     }
   }
 
+  // -------- Start: Mouse -------
+
   @Override
   @TargetApi(Build.VERSION_CODES.N)
   @RequiresApi(Build.VERSION_CODES.N)
   @NonNull
   public PointerIcon getSystemPointerIcon(int type) {
     return PointerIcon.getSystemIcon(getContext(), type);
+  }
+
+  // -------- End: Mouse -------
+
+  // -------- Start: Keyboard -------
+
+  @Override
+  public BinaryMessenger getBinaryMessenger() {
+    return this;
+  }
+
+  @Override
+  public boolean onTextInputKeyEvent(@NonNull KeyEvent keyEvent) {
+    return mTextInputPlugin.handleKeyEvent(keyEvent);
+  }
+
+  @Override
+  public void redispatch(@NonNull KeyEvent keyEvent) {
+    getRootView().dispatchKeyEvent(keyEvent);
+  }
+
+  // -------- End: Keyboard -------
+
+  @Override
+  @UiThread
+  public TaskQueue makeBackgroundTaskQueue(TaskQueueOptions options) {
+    return null;
   }
 
   @Override
@@ -861,8 +873,17 @@ public class FlutterView extends SurfaceView
 
   @Override
   @UiThread
-  public void setMessageHandler(String channel, BinaryMessageHandler handler) {
+  public void setMessageHandler(@NonNull String channel, @NonNull BinaryMessageHandler handler) {
     mNativeView.setMessageHandler(channel, handler);
+  }
+
+  @Override
+  @UiThread
+  public void setMessageHandler(
+      @NonNull String channel,
+      @NonNull BinaryMessageHandler handler,
+      @NonNull TaskQueue taskQueue) {
+    mNativeView.setMessageHandler(channel, handler, taskQueue);
   }
 
   /** Listener will be called on the Android UI thread once when Flutter renders the first frame. */
@@ -871,12 +892,14 @@ public class FlutterView extends SurfaceView
   }
 
   @Override
+  @NonNull
   public TextureRegistry.SurfaceTextureEntry createSurfaceTexture() {
     final SurfaceTexture surfaceTexture = new SurfaceTexture(0);
     return registerSurfaceTexture(surfaceTexture);
   }
 
   @Override
+  @NonNull
   public TextureRegistry.SurfaceTextureEntry registerSurfaceTexture(
       @NonNull SurfaceTexture surfaceTexture) {
     surfaceTexture.detachFromGLContext();
@@ -921,6 +944,7 @@ public class FlutterView extends SurfaceView
               // still be called by a stale reference after released==true and mNativeView==null.
               return;
             }
+
             mNativeView
                 .getFlutterJNI()
                 .markTextureFrameAvailable(SurfaceTextureRegistryEntry.this.id);

@@ -4,11 +4,18 @@
 
 #include "flutter/shell/platform/windows/window_win32.h"
 
+#include "base/win/atl.h"  // NOLINT(build/include_order)
+
 #include <imm.h>
+#include <oleacc.h>
+#include <uiautomationcore.h>
+#include <uiautomationcoreapi.h>
+#include <wrl/client.h>
 
 #include <cstring>
 
 #include "dpi_utils_win32.h"
+#include "keyboard_win32_common.h"
 
 namespace flutter {
 
@@ -42,14 +49,30 @@ char32_t CodePointFromSurrogatePair(wchar_t high, wchar_t low) {
 static const int kMinTouchDeviceId = 0;
 static const int kMaxTouchDeviceId = 128;
 
+static const int kLinesPerScrollWindowsDefault = 3;
+
 }  // namespace
 
-WindowWin32::WindowWin32()
-    : touch_id_generator_(kMinTouchDeviceId, kMaxTouchDeviceId) {
+WindowWin32::WindowWin32() : WindowWin32(nullptr) {}
+
+WindowWin32::WindowWin32(
+    std::unique_ptr<TextInputManagerWin32> text_input_manager)
+    : touch_id_generator_(kMinTouchDeviceId, kMaxTouchDeviceId),
+      text_input_manager_(std::move(text_input_manager)) {
   // Get the DPI of the primary monitor as the initial DPI. If Per-Monitor V2 is
   // supported, |current_dpi_| should be updated in the
   // kWmDpiChangedBeforeParent message.
   current_dpi_ = GetDpiForHWND(nullptr);
+
+  // Get initial value for wheel scroll lines
+  // TODO: Listen to changes for this value
+  // https://github.com/flutter/flutter/issues/107248
+  UpdateScrollOffsetMultiplier();
+
+  if (text_input_manager_ == nullptr) {
+    text_input_manager_ = std::make_unique<TextInputManagerWin32>();
+  }
+  keyboard_manager_ = std::make_unique<KeyboardManagerWin32>(this);
 }
 
 WindowWin32::~WindowWin32() {
@@ -80,6 +103,22 @@ void WindowWin32::InitializeChild(const char* title,
     OutputDebugString(message);
     LocalFree(message);
   }
+  DEVMODE dmi;
+  ZeroMemory(&dmi, sizeof(dmi));
+  dmi.dmSize = sizeof(dmi);
+  if (EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &dmi)) {
+    directManipulationPollingRate_ = dmi.dmDisplayFrequency;
+  } else {
+    OutputDebugString(
+        L"Failed to get framerate, will use default of 60 Hz for gesture "
+        L"polling.");
+  }
+  SetUserObjectInformationA(GetCurrentProcess(),
+                            UOI_TIMERPROC_EXCEPTION_SUPPRESSION, FALSE, 1);
+  SetTimer(result, kDirectManipulationTimer,
+           1000 / directManipulationPollingRate_, nullptr);
+  direct_manipulation_owner_ = std::make_unique<DirectManipulationOwner>(this);
+  direct_manipulation_owner_->Init(width, height);
 }
 
 std::wstring WindowWin32::NarrowToWide(const char* source) {
@@ -119,7 +158,7 @@ LRESULT CALLBACK WindowWin32::WndProc(HWND const window,
 
     auto that = static_cast<WindowWin32*>(cs->lpCreateParams);
     that->window_handle_ = window;
-    that->text_input_manager_.SetWindowHandle(window);
+    that->text_input_manager_->SetWindowHandle(window);
     RegisterTouchWindow(window, 0);
   } else if (WindowWin32* that = GetThisFromHandle(window)) {
     return that->HandleMessage(message, wparam, lparam);
@@ -139,18 +178,55 @@ void WindowWin32::TrackMouseLeaveEvent(HWND hwnd) {
   }
 }
 
+LRESULT WindowWin32::OnGetObject(UINT const message,
+                                 WPARAM const wparam,
+                                 LPARAM const lparam) {
+  LRESULT reference_result = static_cast<LRESULT>(0L);
+
+  // Only the lower 32 bits of lparam are valid when checking the object id
+  // because it sometimes gets sign-extended incorrectly (but not always).
+  DWORD obj_id = static_cast<DWORD>(static_cast<DWORD_PTR>(lparam));
+
+  bool is_uia_request = static_cast<DWORD>(UiaRootObjectId) == obj_id;
+  bool is_msaa_request = static_cast<DWORD>(OBJID_CLIENT) == obj_id;
+
+  if (is_uia_request || is_msaa_request) {
+    // On Windows, we don't get a notification that the screen reader has been
+    // enabled or disabled. There is an API to query for screen reader state,
+    // but that state isn't set by all screen readers, including by Narrator,
+    // the screen reader that ships with Windows:
+    // https://docs.microsoft.com/en-us/windows/win32/winauto/screen-reader-parameter
+    //
+    // Instead, we enable semantics in Flutter if Windows issues queries for
+    // Microsoft Active Accessibility (MSAA) COM objects.
+    OnUpdateSemanticsEnabled(true);
+  }
+
+  gfx::NativeViewAccessible root_view = GetNativeViewAccessible();
+  if (is_uia_request && root_view) {
+    // TODO(cbracken): https://github.com/flutter/flutter/issues/94782
+    // Implement when we adopt UIA support.
+  } else if (is_msaa_request && root_view) {
+    // Return the IAccessible for the root view.
+    Microsoft::WRL::ComPtr<IAccessible> root(root_view);
+    LRESULT lresult = LresultFromObject(IID_IAccessible, wparam, root.Get());
+    return lresult;
+  }
+  return 0;
+}
+
 void WindowWin32::OnImeSetContext(UINT const message,
                                   WPARAM const wparam,
                                   LPARAM const lparam) {
   if (wparam != 0) {
-    text_input_manager_.CreateImeWindow();
+    text_input_manager_->CreateImeWindow();
   }
 }
 
 void WindowWin32::OnImeStartComposition(UINT const message,
                                         WPARAM const wparam,
                                         LPARAM const lparam) {
-  text_input_manager_.CreateImeWindow();
+  text_input_manager_->CreateImeWindow();
   OnComposeBegin();
 }
 
@@ -158,24 +234,33 @@ void WindowWin32::OnImeComposition(UINT const message,
                                    WPARAM const wparam,
                                    LPARAM const lparam) {
   // Update the IME window position.
-  text_input_manager_.UpdateImeWindow();
+  text_input_manager_->UpdateImeWindow();
 
-  if (lparam & GCS_COMPSTR) {
-    // Read the in-progress composing string.
-    long pos = text_input_manager_.GetComposingCursorPosition();
-    std::optional<std::u16string> text =
-        text_input_manager_.GetComposingString();
-    if (text) {
-      OnComposeChange(text.value(), pos);
-    }
-  } else if (lparam & GCS_RESULTSTR) {
+  if (lparam == 0) {
+    OnComposeChange(u"", 0);
+    OnComposeCommit();
+  }
+
+  // Process GCS_RESULTSTR at fisrt, because Google Japanese Input and ATOK send
+  // both GCS_RESULTSTR and GCS_COMPSTR to commit composed text and send new
+  // composing text.
+  if (lparam & GCS_RESULTSTR) {
     // Commit but don't end composing.
     // Read the committed composing string.
-    long pos = text_input_manager_.GetComposingCursorPosition();
-    std::optional<std::u16string> text = text_input_manager_.GetResultString();
+    long pos = text_input_manager_->GetComposingCursorPosition();
+    std::optional<std::u16string> text = text_input_manager_->GetResultString();
     if (text) {
       OnComposeChange(text.value(), pos);
       OnComposeCommit();
+    }
+  }
+  if (lparam & GCS_COMPSTR) {
+    // Read the in-progress composing string.
+    long pos = text_input_manager_->GetComposingCursorPosition();
+    std::optional<std::u16string> text =
+        text_input_manager_->GetComposingString();
+    if (text) {
+      OnComposeChange(text.value(), pos);
     }
   }
 }
@@ -183,7 +268,7 @@ void WindowWin32::OnImeComposition(UINT const message,
 void WindowWin32::OnImeEndComposition(UINT const message,
                                       WPARAM const wparam,
                                       LPARAM const lparam) {
-  text_input_manager_.DestroyImeWindow();
+  text_input_manager_->DestroyImeWindow();
   OnComposeEnd();
 }
 
@@ -195,8 +280,12 @@ void WindowWin32::OnImeRequest(UINT const message,
   // https://github.com/flutter/flutter/issues/74547
 }
 
+void WindowWin32::AbortImeComposing() {
+  text_input_manager_->AbortComposing();
+}
+
 void WindowWin32::UpdateCursorRect(const Rect& rect) {
-  text_input_manager_.UpdateCaretRect(rect);
+  text_input_manager_->UpdateCaretRect(rect);
 }
 
 static uint16_t ResolveKeyCode(uint16_t original,
@@ -246,6 +335,9 @@ WindowWin32::HandleMessage(UINT const message,
       current_height_ = height;
       HandleResize(width, height);
       break;
+    case WM_PAINT:
+      OnPaint();
+      break;
     case WM_TOUCH: {
       UINT num_points = LOWORD(wparam);
       touch_points_.resize(num_points);
@@ -270,7 +362,7 @@ WindowWin32::HandleMessage(UINT const message,
           } else if (touch.dwFlags & TOUCHEVENTF_UP) {
             OnPointerUp(x, y, kFlutterPointerDeviceKindTouch, touch_id,
                         WM_LBUTTONDOWN);
-            OnPointerLeave(kFlutterPointerDeviceKindTouch, touch_id);
+            OnPointerLeave(x, y, kFlutterPointerDeviceKindTouch, touch_id);
             touch_id_generator_.ReleaseNumber(touch.dwID);
           }
         }
@@ -285,15 +377,17 @@ WindowWin32::HandleMessage(UINT const message,
 
         xPos = GET_X_LPARAM(lparam);
         yPos = GET_Y_LPARAM(lparam);
+        mouse_x_ = static_cast<double>(xPos);
+        mouse_y_ = static_cast<double>(yPos);
 
-        OnPointerMove(static_cast<double>(xPos), static_cast<double>(yPos),
-                      device_kind, kDefaultPointerDeviceId);
+        OnPointerMove(mouse_x_, mouse_y_, device_kind, kDefaultPointerDeviceId);
       }
       break;
     case WM_MOUSELEAVE:
       device_kind = GetFlutterPointerDeviceKind();
       if (device_kind == kFlutterPointerDeviceKindMouse) {
-        OnPointerLeave(device_kind, kDefaultPointerDeviceId);
+        OnPointerLeave(mouse_x_, mouse_y_, device_kind,
+                       kDefaultPointerDeviceId);
       }
 
       // Once the tracked event is received, the TrackMouseEvent function
@@ -373,6 +467,32 @@ WindowWin32::HandleMessage(UINT const message,
                 static_cast<double>(WHEEL_DELTA)),
                0.0, kFlutterPointerDeviceKindMouse, kDefaultPointerDeviceId);
       break;
+    case WM_GETOBJECT: {
+      LRESULT lresult = OnGetObject(message, wparam, lparam);
+      if (lresult) {
+        return lresult;
+      }
+      break;
+    }
+    case WM_TIMER:
+      if (wparam == kDirectManipulationTimer) {
+        direct_manipulation_owner_->Update();
+        SetTimer(window_handle_, kDirectManipulationTimer,
+                 1000 / directManipulationPollingRate_, nullptr);
+        return 0;
+      }
+      break;
+    case DM_POINTERHITTEST: {
+      if (direct_manipulation_owner_) {
+        UINT contactId = GET_POINTERID_WPARAM(wparam);
+        POINTER_INPUT_TYPE pointerType;
+        if (GetPointerType(contactId, &pointerType) &&
+            pointerType == PT_TOUCHPAD) {
+          direct_manipulation_owner_->SetContact(contactId);
+        }
+      }
+      break;
+    }
     case WM_INPUTLANGCHANGE:
       // TODO(cbracken): pass this to TextInputManager to aid with
       // language-specific issues.
@@ -417,117 +537,12 @@ WindowWin32::HandleMessage(UINT const message,
     case WM_DEADCHAR:
     case WM_SYSDEADCHAR:
     case WM_CHAR:
-    case WM_SYSCHAR: {
-      static wchar_t s_pending_high_surrogate = 0;
-
-      wchar_t character = static_cast<wchar_t>(wparam);
-      std::u16string text({character});
-      char32_t code_point = character;
-      if (IS_HIGH_SURROGATE(character)) {
-        // Save to send later with the trailing surrogate.
-        s_pending_high_surrogate = character;
-      } else if (IS_LOW_SURROGATE(character) && s_pending_high_surrogate != 0) {
-        text.insert(text.begin(), s_pending_high_surrogate);
-        // Merge the surrogate pairs for the key event.
-        code_point =
-            CodePointFromSurrogatePair(s_pending_high_surrogate, character);
-        s_pending_high_surrogate = 0;
-      }
-
-      const unsigned int scancode = (lparam >> 16) & 0xff;
-
-      // All key presses that generate a character should be sent from
-      // WM_CHAR. In order to send the full key press information, the keycode
-      // is persisted in keycode_for_char_message_ obtained from WM_KEYDOWN.
-      //
-      // A high surrogate is always followed by a low surrogate, while a
-      // non-surrogate character always appears alone. Filter out high
-      // surrogates so that it's the low surrogate message that triggers
-      // the onKey, asks if the framework handles it (which can only be done
-      // once), and calls OnText during the redispatched messages.
-      if (keycode_for_char_message_ != 0 && !IS_HIGH_SURROGATE(character)) {
-        const bool extended = ((lparam >> 24) & 0x01) == 0x01;
-        const bool was_down = lparam & 0x40000000;
-        // Certain key combinations yield control characters as WM_CHAR's
-        // lParam. For example, 0x01 for Ctrl-A. Filter these characters.
-        // See
-        // https://docs.microsoft.com/en-us/windows/win32/learnwin32/accelerator-tables
-        const char32_t event_character =
-            (message == WM_DEADCHAR || message == WM_SYSDEADCHAR)
-                ? Win32MapVkToChar(keycode_for_char_message_)
-            : IsPrintable(code_point) ? code_point
-                                      : 0;
-        bool handled = OnKey(keycode_for_char_message_, scancode, WM_KEYDOWN,
-                             event_character, extended, was_down);
-        keycode_for_char_message_ = 0;
-        if (handled) {
-          // If the OnKey handler handles the message, then return so we don't
-          // pass it to OnText, because handling the message indicates that
-          // OnKey either just sent it to the framework to be processed.
-          //
-          // This message will be redispatched if not handled by the framework,
-          // during which the OnText (below) might be reached. However, if the
-          // original message was preceded by dead chars (such as ^ and e
-          // yielding ê), then since the redispatched message is no longer
-          // preceded by the dead char, the text will be wrong. Therefore we
-          // record the text here for the redispached event to use.
-          if (message == WM_CHAR) {
-            text_for_scancode_on_redispatch_[scancode] = text;
-          }
-          return 0;
-        }
-      }
-
-      // Of the messages handled here, only WM_CHAR should be treated as
-      // characters. WM_SYS*CHAR are not part of text input, and WM_DEADCHAR
-      // will be incorporated into a later WM_CHAR with the full character.
-      // Also filter out:
-      // - Lead surrogates, which like dead keys will be send once combined.
-      // - ASCII control characters, which are sent as WM_CHAR events for all
-      //   control key shortcuts.
-      if (message == WM_CHAR && s_pending_high_surrogate == 0 &&
-          IsPrintable(character)) {
-        auto found_text_iter = text_for_scancode_on_redispatch_.find(scancode);
-        if (found_text_iter != text_for_scancode_on_redispatch_.end()) {
-          text = found_text_iter->second;
-          text_for_scancode_on_redispatch_.erase(found_text_iter);
-        }
-        OnText(text);
-      }
-      return 0;
-    }
+    case WM_SYSCHAR:
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
     case WM_KEYUP:
     case WM_SYSKEYUP:
-      const bool is_keydown_message =
-          (message == WM_KEYDOWN || message == WM_SYSKEYDOWN);
-      // Check if this key produces a character. If so, the key press should
-      // be sent with the character produced at WM_CHAR. Store the produced
-      // keycode (it's not accessible from WM_CHAR) to be used in WM_CHAR.
-      //
-      // Messages with Control or Win modifiers down are never considered as
-      // character messages. This allows key combinations such as "CTRL + Digit"
-      // to properly produce key down events even though `MapVirtualKey` returns
-      // a valid character. See https://github.com/flutter/flutter/issues/85587.
-      unsigned int character = Win32MapVkToChar(wparam);
-      UINT next_key_message = PeekNextMessageType(WM_KEYFIRST, WM_KEYLAST);
-      bool has_wm_char =
-          (next_key_message == WM_DEADCHAR ||
-           next_key_message == WM_SYSDEADCHAR || next_key_message == WM_CHAR ||
-           next_key_message == WM_SYSCHAR);
-      if (character > 0 && is_keydown_message && has_wm_char) {
-        keycode_for_char_message_ = wparam;
-        return 0;
-      }
-      unsigned int keyCode(wparam);
-      const uint8_t scancode = (lparam >> 16) & 0xff;
-      const bool extended = ((lparam >> 24) & 0x01) == 0x01;
-      // If the key is a modifier, get its side.
-      keyCode = ResolveKeyCode(keyCode, extended, scancode);
-      const int action = is_keydown_message ? WM_KEYDOWN : WM_KEYUP;
-      const bool was_down = lparam & 0x40000000;
-      if (OnKey(keyCode, scancode, action, 0, extended, was_down)) {
+      if (keyboard_manager_->HandleMessage(message, wparam, lparam)) {
         return 0;
       }
       break;
@@ -552,8 +567,25 @@ HWND WindowWin32::GetWindowHandle() {
   return window_handle_;
 }
 
+float WindowWin32::GetScrollOffsetMultiplier() {
+  return scroll_offset_multiplier_;
+}
+
+void WindowWin32::UpdateScrollOffsetMultiplier() {
+  UINT lines_per_scroll = kLinesPerScrollWindowsDefault;
+
+  // Get lines per scroll wheel value from Windows
+  SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, &lines_per_scroll, 0);
+
+  // This logic is based off Chromium's implementation
+  // https://source.chromium.org/chromium/chromium/src/+/main:ui/events/blink/web_input_event_builders_win.cc;l=319-331
+  scroll_offset_multiplier_ =
+      static_cast<float>(lines_per_scroll) * 100.0 / 3.0;
+}
+
 void WindowWin32::Destroy() {
   if (window_handle_) {
+    text_input_manager_->SetWindowHandle(nullptr);
     DestroyWindow(window_handle_);
     window_handle_ = nullptr;
   }
@@ -564,17 +596,10 @@ void WindowWin32::Destroy() {
 void WindowWin32::HandleResize(UINT width, UINT height) {
   current_width_ = width;
   current_height_ = height;
-  OnResize(width, height);
-}
-
-UINT WindowWin32::PeekNextMessageType(UINT wMsgFilterMin, UINT wMsgFilterMax) {
-  MSG next_message;
-  BOOL has_msg = Win32PeekMessage(&next_message, window_handle_, wMsgFilterMin,
-                                  wMsgFilterMax, PM_NOREMOVE);
-  if (!has_msg) {
-    return 0;
+  if (direct_manipulation_owner_) {
+    direct_manipulation_owner_->ResizeViewport(width, height);
   }
-  return next_message.message;
+  OnResize(width, height);
 }
 
 WindowWin32* WindowWin32::GetThisFromHandle(HWND const window) noexcept {
@@ -586,19 +611,23 @@ LRESULT WindowWin32::Win32DefWindowProc(HWND hWnd,
                                         UINT Msg,
                                         WPARAM wParam,
                                         LPARAM lParam) {
-  return DefWindowProc(hWnd, Msg, wParam, lParam);
+  return ::DefWindowProc(hWnd, Msg, wParam, lParam);
 }
 
 BOOL WindowWin32::Win32PeekMessage(LPMSG lpMsg,
-                                   HWND hWnd,
                                    UINT wMsgFilterMin,
                                    UINT wMsgFilterMax,
                                    UINT wRemoveMsg) {
-  return PeekMessage(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg);
+  return ::PeekMessage(lpMsg, window_handle_, wMsgFilterMin, wMsgFilterMax,
+                       wRemoveMsg);
 }
 
 uint32_t WindowWin32::Win32MapVkToChar(uint32_t virtual_key) {
-  return MapVirtualKey(virtual_key, MAPVK_VK_TO_CHAR);
+  return ::MapVirtualKey(virtual_key, MAPVK_VK_TO_CHAR);
+}
+
+UINT WindowWin32::Win32DispatchMessage(UINT Msg, WPARAM wParam, LPARAM lParam) {
+  return ::SendMessage(window_handle_, Msg, wParam, lParam);
 }
 
 }  // namespace flutter

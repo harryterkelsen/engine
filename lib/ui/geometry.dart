@@ -91,7 +91,7 @@ abstract class OffsetBase {
   }
 
   @override
-  int get hashCode => hashValues(_dx, _dy);
+  int get hashCode => Object.hash(_dx, _dy);
 
   @override
   String toString() => 'OffsetBase(${_dx.toStringAsFixed(1)}, ${_dy.toStringAsFixed(1)})';
@@ -341,7 +341,7 @@ class Offset extends OffsetBase {
   }
 
   @override
-  int get hashCode => hashValues(dx, dy);
+  int get hashCode => Object.hash(dx, dy);
 
   @override
   String toString() => 'Offset(${dx.toStringAsFixed(1)}, ${dy.toStringAsFixed(1)})';
@@ -613,7 +613,7 @@ class Size extends OffsetBase {
   }
 
   @override
-  int get hashCode => hashValues(_dx, _dy);
+  int get hashCode => Object.hash(_dx, _dy);
 
   @override
   String toString() => 'Size(${width.toStringAsFixed(1)}, ${height.toStringAsFixed(1)})';
@@ -672,7 +672,14 @@ class Rect {
     math.max(a.dy, b.dy),
   );
 
-  Float32List get _value32 => Float32List.fromList(<double>[left, top, right, bottom]);
+  Float32List _getValue32() {
+    final Float32List result = Float32List(4);
+    result[0] = left;
+    result[1] = top;
+    result[2] = right;
+    result[3] = bottom;
+    return result;
+  }
 
   /// The offset of the left edge of this rectangle from the x axis.
   final double left;
@@ -900,7 +907,7 @@ class Rect {
   }
 
   @override
-  int get hashCode => hashValues(left, top, right, bottom);
+  int get hashCode => Object.hash(left, top, right, bottom);
 
   @override
   String toString() => 'Rect.fromLTRB(${left.toStringAsFixed(1)}, ${top.toStringAsFixed(1)}, ${right.toStringAsFixed(1)}, ${bottom.toStringAsFixed(1)})';
@@ -1026,7 +1033,7 @@ class Radius {
   }
 
   @override
-  int get hashCode => hashValues(x, y);
+  int get hashCode => Object.hash(x, y);
 
   @override
   String toString() {
@@ -1192,20 +1199,22 @@ class RRect {
        assert(blRadiusX != null),
        assert(blRadiusY != null);
 
-  Float32List get _value32 => Float32List.fromList(<double>[
-    left,
-    top,
-    right,
-    bottom,
-    tlRadiusX,
-    tlRadiusY,
-    trRadiusX,
-    trRadiusY,
-    brRadiusX,
-    brRadiusY,
-    blRadiusX,
-    blRadiusY,
-  ]);
+  Float32List _getValue32()  {
+    final Float32List result = Float32List(12);
+    result[0] = left;
+    result[1] = top;
+    result[2] = right;
+    result[3] = bottom;
+    result[4] = tlRadiusX;
+    result[5] = tlRadiusY;
+    result[6] = trRadiusX;
+    result[7] = trRadiusY;
+    result[8] = brRadiusX;
+    result[9] = brRadiusY;
+    result[10] = blRadiusX;
+    result[11] = blRadiusY;
+    return result;
+  }
 
   /// The offset of the left edge of this rectangle from the x axis.
   final double left;
@@ -1445,7 +1454,7 @@ class RRect {
   /// Therefore, this method is only needed for RRect use cases that require
   /// the appropriately scaled radii values.
   ///
-  /// See the [Skia scaling implementation](https://github.com/google/skia/blob/master/src/core/SkRRect.cpp)
+  /// See the [Skia scaling implementation](https://github.com/google/skia/blob/main/src/core/SkRRect.cpp)
   /// for more details.
   RRect scaleRadii() {
     double scale = 1.0;
@@ -1636,7 +1645,7 @@ class RRect {
   }
 
   @override
-  int get hashCode => hashValues(left, top, right, bottom,
+  int get hashCode => Object.hash(left, top, right, bottom,
     tlRadiusX, tlRadiusY, trRadiusX, trRadiusY,
     blRadiusX, blRadiusY, brRadiusX, brRadiusY);
 

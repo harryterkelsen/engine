@@ -29,7 +29,12 @@ API_AVAILABLE(ios(13.4))
 
 @implementation FlutterChannelKeyResponderTest
 
-- (void)setUp API_AVAILABLE(ios(13.4)) {
+- (void)setUp {
+  // All of these tests were designed to run on iOS 13.4 or later.
+  if (@available(iOS 13.4, *)) {
+  } else {
+    XCTSkip(@"Required API not present for test.");
+  }
   _testKeyDownEvent = keyDownEvent(keyACode, 0x0, 0.0f, "a", "a");
   _testKeyUpEvent = keyUpEvent(keyACode, 0x0, 0.0f);
 }
@@ -69,8 +74,8 @@ API_AVAILABLE(ios(13.4))
                 }];
 
   XCTAssertEqual([messages count], 1u);
-  XCTAssertEqual([messages lastObject][@"keymap"], @"ios");
-  XCTAssertEqual([messages lastObject][@"type"], @"keydown");
+  XCTAssertStrEqual([messages lastObject][@"keymap"], @"ios");
+  XCTAssertStrEqual([messages lastObject][@"type"], @"keydown");
   XCTAssertEqual([[messages lastObject][@"keyCode"] intValue], keyACode);
   XCTAssertEqual([[messages lastObject][@"modifiers"] intValue], 0x0);
   XCTAssertStrEqual([messages lastObject][@"characters"], @"a");
@@ -90,8 +95,8 @@ API_AVAILABLE(ios(13.4))
                 }];
 
   XCTAssertEqual([messages count], 1u);
-  XCTAssertEqual([messages lastObject][@"keymap"], @"ios");
-  XCTAssertEqual([messages lastObject][@"type"], @"keyup");
+  XCTAssertStrEqual([messages lastObject][@"keymap"], @"ios");
+  XCTAssertStrEqual([messages lastObject][@"type"], @"keyup");
   XCTAssertEqual([[messages lastObject][@"keyCode"] intValue], keyACode);
   XCTAssertEqual([[messages lastObject][@"modifiers"] intValue], 0x0);
 
@@ -127,8 +132,8 @@ API_AVAILABLE(ios(13.4))
                 }];
 
   XCTAssertEqual([messages count], 1u);
-  XCTAssertEqual([messages lastObject][@"keymap"], @"ios");
-  XCTAssertEqual([messages lastObject][@"type"], @"keydown");
+  XCTAssertStrEqual([messages lastObject][@"keymap"], @"ios");
+  XCTAssertStrEqual([messages lastObject][@"type"], @"keydown");
   XCTAssertEqual([[messages lastObject][@"keyCode"] intValue], keyACode);
   XCTAssertEqual([[messages lastObject][@"modifiers"] intValue], 0x0);
   XCTAssertStrEqual([messages lastObject][@"characters"], @"a");

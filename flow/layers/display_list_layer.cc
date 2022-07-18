@@ -4,7 +4,15 @@
 
 #include "flutter/flow/layers/display_list_layer.h"
 
-#include "flutter/flow/display_list_canvas.h"
+#include <utility>
+
+#include "flutter/display_list/display_list_builder.h"
+#include "flutter/display_list/display_list_flags.h"
+#include "flutter/flow/layer_snapshot_store.h"
+#include "flutter/flow/layers/cacheable_layer.h"
+#include "flutter/flow/layers/offscreen_surface.h"
+#include "flutter/flow/raster_cache.h"
+#include "flutter/flow/raster_cache_util.h"
 
 namespace flutter {
 
@@ -12,12 +20,14 @@ DisplayListLayer::DisplayListLayer(const SkPoint& offset,
                                    SkiaGPUObject<DisplayList> display_list,
                                    bool is_complex,
                                    bool will_change)
-    : offset_(offset),
-      display_list_(std::move(display_list)),
-      is_complex_(is_complex),
-      will_change_(will_change) {}
-
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
+    : offset_(offset), display_list_(std::move(display_list)) {
+  if (display_list_.skia_object() != nullptr) {
+    bounds_ = display_list_.skia_object()->bounds().makeOffset(offset_.x(),
+                                                               offset_.y());
+    display_list_raster_cache_item_ = DisplayListRasterCacheItem::Make(
+        display_list_.skia_object().get(), offset_, is_complex, will_change);
+  }
+}
 
 bool DisplayListLayer::IsReplacing(DiffContext* context,
                                    const Layer* layer) const {
@@ -81,22 +91,17 @@ bool DisplayListLayer::Compare(DiffContext::Statistics& statistics,
   return res;
 }
 
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
-
 void DisplayListLayer::Preroll(PrerollContext* context,
                                const SkMatrix& matrix) {
   TRACE_EVENT0("flutter", "DisplayListLayer::Preroll");
-
   DisplayList* disp_list = display_list();
 
-  if (auto* cache = context->raster_cache) {
-    TRACE_EVENT0("flutter", "DisplayListLayer::RasterCache (Preroll)");
-    cache->Prepare(context, disp_list, is_complex_, will_change_, matrix,
-                   offset_);
+  AutoCache cache =
+      AutoCache(display_list_raster_cache_item_.get(), context, matrix);
+  if (disp_list->can_apply_group_opacity()) {
+    context->subtree_can_inherit_opacity = true;
   }
-
-  SkRect bounds = disp_list->bounds().makeOffset(offset_.x(), offset_.y());
-  set_paint_bounds(bounds);
+  set_paint_bounds(bounds_);
 }
 
 void DisplayListLayer::Paint(PaintContext& context) const {
@@ -106,18 +111,57 @@ void DisplayListLayer::Paint(PaintContext& context) const {
 
   SkAutoCanvasRestore save(context.leaf_nodes_canvas, true);
   context.leaf_nodes_canvas->translate(offset_.x(), offset_.y());
-#ifndef SUPPORT_FRACTIONAL_TRANSLATION
-  context.leaf_nodes_canvas->setMatrix(RasterCache::GetIntegralTransCTM(
-      context.leaf_nodes_canvas->getTotalMatrix()));
-#endif
 
-  if (context.raster_cache &&
-      context.raster_cache->Draw(*display_list(), *context.leaf_nodes_canvas)) {
-    TRACE_EVENT_INSTANT0("flutter", "raster cache hit");
-    return;
+  if (context.raster_cache && display_list_raster_cache_item_) {
+    AutoCachePaint cache_paint(context);
+    if (display_list_raster_cache_item_->Draw(context,
+                                              cache_paint.sk_paint())) {
+      TRACE_EVENT_INSTANT0("flutter", "raster cache hit");
+      return;
+    }
   }
 
-  display_list()->RenderTo(context.leaf_nodes_canvas);
+  if (context.enable_leaf_layer_tracing) {
+    const auto canvas_size = context.leaf_nodes_canvas->getBaseLayerSize();
+    auto offscreen_surface =
+        std::make_unique<OffscreenSurface>(context.gr_context, canvas_size);
+
+    const auto& ctm = context.leaf_nodes_canvas->getTotalMatrix();
+
+    const auto start_time = fml::TimePoint::Now();
+    {
+      // render display list to offscreen surface.
+      auto* canvas = offscreen_surface->GetCanvas();
+      SkAutoCanvasRestore save(canvas, true);
+      canvas->clear(SK_ColorTRANSPARENT);
+      canvas->setMatrix(ctm);
+      display_list()->RenderTo(canvas, context.inherited_opacity);
+      canvas->flush();
+    }
+    const fml::TimeDelta offscreen_render_time =
+        fml::TimePoint::Now() - start_time;
+
+    const SkRect device_bounds =
+        RasterCacheUtil::GetDeviceBounds(paint_bounds(), ctm);
+    sk_sp<SkData> raster_data = offscreen_surface->GetRasterData(true);
+    LayerSnapshotData snapshot_data(unique_id(), offscreen_render_time,
+                                    raster_data, device_bounds);
+    context.layer_snapshot_store->Add(snapshot_data);
+  }
+
+  if (context.leaf_nodes_builder) {
+    AutoCachePaint save_paint(context);
+    int restore_count = context.leaf_nodes_builder->getSaveCount();
+    if (save_paint.dl_paint() != nullptr) {
+      context.leaf_nodes_builder->saveLayer(&paint_bounds(),
+                                            save_paint.dl_paint());
+    }
+    context.leaf_nodes_builder->drawDisplayList(display_list_.skia_object());
+    context.leaf_nodes_builder->restoreToCount(restore_count);
+  } else {
+    display_list()->RenderTo(context.leaf_nodes_canvas,
+                             context.inherited_opacity);
+  }
 }
 
 }  // namespace flutter

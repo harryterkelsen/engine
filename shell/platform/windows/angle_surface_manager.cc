@@ -7,15 +7,6 @@
 #include <iostream>
 #include <vector>
 
-#ifdef WINUWP
-#include <third_party/cppwinrt/generated/winrt/Windows.UI.Composition.h>
-#include <windows.ui.core.h>
-#endif
-
-#if defined(WINUWP) && defined(USECOREWINDOW)
-#include <winrt/Windows.UI.Core.h>
-#endif
-
 // Logs an EGL error to stderr. This automatically calls eglGetError()
 // and logs the error code.
 static void LogEglError(std::string message) {
@@ -75,6 +66,9 @@ bool AngleSurfaceManager::InitializeEGL(
 }
 
 bool AngleSurfaceManager::Initialize() {
+  // TODO(dnfield): Enable MSAA here, see similar code in android_context_gl.cc
+  // Will need to plumb in argument from project bundle for sampling rate.
+  // https://github.com/flutter/flutter/issues/100392
   const EGLint config_attributes[] = {EGL_RED_SIZE,   8, EGL_GREEN_SIZE,   8,
                                       EGL_BLUE_SIZE,  8, EGL_ALPHA_SIZE,   8,
                                       EGL_DEPTH_SIZE, 8, EGL_STENCIL_SIZE, 8,
@@ -95,6 +89,12 @@ bool AngleSurfaceManager::Initialize() {
       // behalf of the application when it gets suspended.
       EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE,
       EGL_TRUE,
+
+      // This extension allows angle to render directly on a D3D swapchain
+      // in the correct orientation on D3D11.
+      EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE,
+      EGL_EXPERIMENTAL_PRESENT_PATH_FAST_ANGLE,
+
       EGL_NONE,
   };
 
@@ -122,20 +122,10 @@ bool AngleSurfaceManager::Initialize() {
       EGL_NONE,
   };
 
-  // These are used to request ANGLE's D3D9 renderer as a fallback if D3D11
-  // is not available.
-  const EGLint d3d9_display_attributes[] = {
-      EGL_PLATFORM_ANGLE_TYPE_ANGLE,
-      EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE,
-      EGL_TRUE,
-      EGL_NONE,
-  };
-
   std::vector<const EGLint*> display_attributes_configs = {
       d3d11_display_attributes,
       d3d11_fl_9_3_display_attributes,
       d3d11_warp_display_attributes,
-      d3d9_display_attributes,
   };
 
   PFNEGLGETPLATFORMDISPLAYEXTPROC egl_get_platform_display_EXT =
@@ -147,7 +137,7 @@ bool AngleSurfaceManager::Initialize() {
   }
 
   // Attempt to initialize ANGLE's renderer in order of: D3D11, D3D11 Feature
-  // Level 9_3, D3D11 WARP and finally D3D9.
+  // Level 9_3 and finally D3D11 WARP.
   for (auto config : display_attributes_configs) {
     bool should_log = (config == display_attributes_configs.back());
     if (InitializeEGL(egl_get_platform_display_EXT, config, should_log)) {
@@ -183,6 +173,9 @@ bool AngleSurfaceManager::Initialize() {
 
 void AngleSurfaceManager::CleanUp() {
   EGLBoolean result = EGL_FALSE;
+
+  // Needs to be reset before destroying the EGLContext.
+  resolved_device_.Reset();
 
   if (egl_display_ != EGL_NO_DISPLAY && egl_context_ != EGL_NO_CONTEXT) {
     result = eglDestroyContext(egl_display_, egl_context_);
@@ -222,31 +215,14 @@ bool AngleSurfaceManager::CreateSurface(WindowsRenderTarget* render_target,
 
   EGLSurface surface = EGL_NO_SURFACE;
 
-#ifdef WINUWP
-  const EGLint surfaceAttributes[] = {EGL_NONE};
-#else
   const EGLint surfaceAttributes[] = {
       EGL_FIXED_SIZE_ANGLE, EGL_TRUE, EGL_WIDTH, width,
       EGL_HEIGHT,           height,   EGL_NONE};
-#endif
 
-#ifdef WINUWP
-#ifdef USECOREWINDOW
-  auto target = std::get<winrt::Windows::UI::Core::CoreWindow>(*render_target);
-#else
-  auto target =
-      std::get<winrt::Windows::UI::Composition::SpriteVisual>(*render_target);
-#endif
-  surface = eglCreateWindowSurface(
-      egl_display_, egl_config_,
-      static_cast<EGLNativeWindowType>(winrt::get_abi(target)),
-      surfaceAttributes);
-#else
   surface = eglCreateWindowSurface(
       egl_display_, egl_config_,
       static_cast<EGLNativeWindowType>(std::get<HWND>(*render_target)),
       surfaceAttributes);
-#endif
   if (surface == EGL_NO_SURFACE) {
     LogEglError("Surface creation failed.");
   }
@@ -266,23 +242,12 @@ void AngleSurfaceManager::ResizeSurface(WindowsRenderTarget* render_target,
     surface_width_ = width;
     surface_height_ = height;
 
-    // TODO(clarkezone) convert ifdef to use use final implementation of angle
-    // resize API prototyped here
-    // https://github.com/clarkezone/angle/tree/resizeswapchaintest to eliminate
-    // unnecessary surface creation / desctruction by use ResizeSwapchain
-    // https://github.com/flutter/flutter/issues/79427
-#ifdef WINUWP
-    // Resize render_surface_.  Internaly this calls mSwapChain->ResizeBuffers
-    // avoiding the need to destory and recreate the underlying SwapChain.
-    eglPostSubBufferNV(egl_display_, render_surface_, 1, 1, width, height);
-#else
     ClearContext();
     DestroySurface();
     if (!CreateSurface(render_target, width, height)) {
       std::cerr << "AngleSurfaceManager::ResizeSurface failed to create surface"
                 << std::endl;
     }
-#endif
   }
 }
 
@@ -324,6 +289,46 @@ bool AngleSurfaceManager::MakeResourceCurrent() {
 
 EGLBoolean AngleSurfaceManager::SwapBuffers() {
   return (eglSwapBuffers(egl_display_, render_surface_));
+}
+
+EGLSurface AngleSurfaceManager::CreateSurfaceFromHandle(
+    EGLenum handle_type,
+    EGLClientBuffer handle,
+    const EGLint* attributes) const {
+  return eglCreatePbufferFromClientBuffer(egl_display_, handle_type, handle,
+                                          egl_config_, attributes);
+}
+
+bool AngleSurfaceManager::GetDevice(ID3D11Device** device) {
+  using Microsoft::WRL::ComPtr;
+
+  if (!resolved_device_) {
+    PFNEGLQUERYDISPLAYATTRIBEXTPROC egl_query_display_attrib_EXT =
+        reinterpret_cast<PFNEGLQUERYDISPLAYATTRIBEXTPROC>(
+            eglGetProcAddress("eglQueryDisplayAttribEXT"));
+
+    PFNEGLQUERYDEVICEATTRIBEXTPROC egl_query_device_attrib_EXT =
+        reinterpret_cast<PFNEGLQUERYDEVICEATTRIBEXTPROC>(
+            eglGetProcAddress("eglQueryDeviceAttribEXT"));
+
+    if (!egl_query_display_attrib_EXT || !egl_query_device_attrib_EXT) {
+      return false;
+    }
+
+    EGLAttrib egl_device = 0;
+    EGLAttrib angle_device = 0;
+    if (egl_query_display_attrib_EXT(egl_display_, EGL_DEVICE_EXT,
+                                     &egl_device) == EGL_TRUE) {
+      if (egl_query_device_attrib_EXT(
+              reinterpret_cast<EGLDeviceEXT>(egl_device),
+              EGL_D3D11_DEVICE_ANGLE, &angle_device) == EGL_TRUE) {
+        resolved_device_ = reinterpret_cast<ID3D11Device*>(angle_device);
+      }
+    }
+  }
+
+  resolved_device_.CopyTo(device);
+  return (resolved_device_ != nullptr);
 }
 
 }  // namespace flutter

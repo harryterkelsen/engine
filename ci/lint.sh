@@ -29,6 +29,7 @@ function follow_links() (
 
 SCRIPT_DIR=$(follow_links "$(dirname -- "${BASH_SOURCE[0]}")")
 SRC_DIR="$(cd "$SCRIPT_DIR/../.."; pwd -P)"
+FLUTTER_DIR="$(cd "$SCRIPT_DIR/.."; pwd -P)"
 DART_BIN="${SRC_DIR}/third_party/dart/tools/sdks/dart-sdk/bin"
 DART="${DART_BIN}/dart"
 
@@ -41,6 +42,12 @@ cd "$SCRIPT_DIR"
 "$DART" \
   --disable-dart-dev \
   "$SRC_DIR/flutter/tools/clang_tidy/bin/main.dart" \
-  --compile-commands="$COMPILE_COMMANDS" \
-  --repo="$SRC_DIR/flutter" \
+  --src-dir="$SRC_DIR" \
   "$@"
+
+cd "$FLUTTER_DIR"
+pylint-2.7 --rcfile=.pylintrc \
+  "build/" \
+  "ci/" \
+  "impeller/" \
+  "tools/gn"

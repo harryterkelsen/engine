@@ -5,10 +5,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Matchers.isNull;
-import static org.mockito.Matchers.notNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNotNull;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -21,8 +21,11 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
+import android.view.View;
 import androidx.annotation.NonNull;
 import androidx.lifecycle.Lifecycle;
+import androidx.test.core.app.ApplicationProvider;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.flutter.FlutterInjector;
 import io.flutter.embedding.android.FlutterActivityAndFragmentDelegate.Host;
 import io.flutter.embedding.engine.FlutterEngine;
@@ -34,7 +37,6 @@ import io.flutter.embedding.engine.plugins.activity.ActivityControlSurface;
 import io.flutter.embedding.engine.renderer.FlutterRenderer;
 import io.flutter.embedding.engine.renderer.FlutterUiDisplayListener;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
-import io.flutter.embedding.engine.systemchannels.KeyEventChannel;
 import io.flutter.embedding.engine.systemchannels.LifecycleChannel;
 import io.flutter.embedding.engine.systemchannels.LocalizationChannel;
 import io.flutter.embedding.engine.systemchannels.MouseCursorChannel;
@@ -44,19 +46,21 @@ import io.flutter.embedding.engine.systemchannels.SystemChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.plugin.localization.LocalizationPlugin;
 import io.flutter.plugin.platform.PlatformViewsController;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.robolectric.Robolectric;
-import org.robolectric.RobolectricTestRunner;
-import org.robolectric.RuntimeEnvironment;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 
 @Config(manifest = Config.NONE)
-@RunWith(RobolectricTestRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class FlutterActivityAndFragmentDelegateTest {
+  private final Context ctx = ApplicationProvider.getApplicationContext();
   private FlutterEngine mockFlutterEngine;
   private FlutterActivityAndFragmentDelegate.Host mockHost;
 
@@ -69,11 +73,12 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // Create a mocked Host, which is required by the delegate being tested.
     mockHost = mock(FlutterActivityAndFragmentDelegate.Host.class);
-    when(mockHost.getContext()).thenReturn(RuntimeEnvironment.application);
+    when(mockHost.getContext()).thenReturn(ctx);
     when(mockHost.getActivity()).thenReturn(Robolectric.setupActivity(Activity.class));
     when(mockHost.getLifecycle()).thenReturn(mock(Lifecycle.class));
     when(mockHost.getFlutterShellArgs()).thenReturn(new FlutterShellArgs(new String[] {}));
     when(mockHost.getDartEntrypointFunctionName()).thenReturn("main");
+    when(mockHost.getDartEntrypointArgs()).thenReturn(null);
     when(mockHost.getAppBundlePath()).thenReturn("/fake/path");
     when(mockHost.getInitialRoute()).thenReturn("/");
     when(mockHost.getRenderMode()).thenReturn(RenderMode.surface);
@@ -82,6 +87,7 @@ public class FlutterActivityAndFragmentDelegateTest {
     when(mockHost.shouldAttachEngineToActivity()).thenReturn(true);
     when(mockHost.shouldHandleDeeplinking()).thenReturn(false);
     when(mockHost.shouldDestroyEngineWithHost()).thenReturn(true);
+    when(mockHost.shouldDispatchAppLifecycleState()).thenReturn(true);
   }
 
   @Test
@@ -92,7 +98,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // We're testing lifecycle behaviors, which require/expect that certain methods have already
     // been executed by the time they run. Therefore, we run those expected methods first.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
 
     // --- Execute the behavior under test ---
@@ -136,6 +142,30 @@ public class FlutterActivityAndFragmentDelegateTest {
   }
 
   @Test
+  public void itDoesNotSendsLifecycleEventsToFlutter() {
+    // ---- Test setup ----
+    // Create the real object that we're testing.
+    FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(mockHost);
+
+    when(mockHost.shouldDispatchAppLifecycleState()).thenReturn(false);
+
+    // We're testing lifecycle behaviors, which require/expect that certain methods have already
+    // been executed by the time they run. Therefore, we run those expected methods first.
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
+    delegate.onStart();
+    delegate.onResume();
+    delegate.onPause();
+    delegate.onStop();
+    delegate.onDetach();
+
+    verify(mockFlutterEngine.getLifecycleChannel(), never()).appIsResumed();
+    verify(mockFlutterEngine.getLifecycleChannel(), never()).appIsPaused();
+    verify(mockFlutterEngine.getLifecycleChannel(), never()).appIsInactive();
+    verify(mockFlutterEngine.getLifecycleChannel(), never()).appIsDetached();
+  }
+
+  @Test
   public void itDefersToTheHostToProvideFlutterEngine() {
     // ---- Test setup ----
     // Create the real object that we're testing.
@@ -143,7 +173,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is created in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Verify that the host was asked to provide a FlutterEngine.
     verify(mockHost, times(1)).provideFlutterEngine(any(Context.class));
@@ -170,7 +200,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is obtained in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
     delegate.onResume();
@@ -200,7 +230,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine existence is verified in onAttach()
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Expect IllegalStateException.
   }
@@ -213,7 +243,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is created in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Verify that the host was asked to configure our FlutterEngine.
     verify(mockHost, times(1)).configureFlutterEngine(mockFlutterEngine);
@@ -226,18 +256,18 @@ public class FlutterActivityAndFragmentDelegateTest {
     FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(mockHost);
 
     // --- Execute the behavior under test ---
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
 
     // Verify that the host was asked to configure a FlutterSurfaceView.
-    verify(mockHost, times(1)).onFlutterSurfaceViewCreated(notNull(FlutterSurfaceView.class));
+    verify(mockHost, times(1)).onFlutterSurfaceViewCreated(isNotNull());
   }
 
   @Test
   public void itGivesHostAnOpportunityToConfigureFlutterTextureView() {
     // ---- Test setup ----
     Host customMockHost = mock(Host.class);
-    when(customMockHost.getContext()).thenReturn(RuntimeEnvironment.application);
+    when(customMockHost.getContext()).thenReturn(ctx);
     when(customMockHost.getActivity()).thenReturn(Robolectric.setupActivity(Activity.class));
     when(customMockHost.getLifecycle()).thenReturn(mock(Lifecycle.class));
     when(customMockHost.getFlutterShellArgs()).thenReturn(new FlutterShellArgs(new String[] {}));
@@ -255,11 +285,11 @@ public class FlutterActivityAndFragmentDelegateTest {
         new FlutterActivityAndFragmentDelegate(customMockHost);
 
     // --- Execute the behavior under test ---
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, false);
 
     // Verify that the host was asked to configure a FlutterTextureView.
-    verify(customMockHost, times(1)).onFlutterTextureViewCreated(notNull(FlutterTextureView.class));
+    verify(customMockHost, times(1)).onFlutterTextureViewCreated(isNotNull());
   }
 
   @Test
@@ -270,7 +300,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is created in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onDetach();
 
     // Verify that the host was asked to configure our FlutterEngine.
@@ -288,7 +318,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The initial route is sent in onStart().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
 
@@ -312,12 +342,59 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Dart is executed in onStart().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
 
     // Verify that the host's Dart entrypoint was used.
-    verify(mockFlutterEngine.getDartExecutor(), times(1)).executeDartEntrypoint(eq(dartEntrypoint));
+    verify(mockFlutterEngine.getDartExecutor(), times(1))
+        .executeDartEntrypoint(eq(dartEntrypoint), isNull());
+  }
+
+  @Test
+  public void itExecutesDartEntrypointWithArgsProvidedByHost() {
+    // ---- Test setup ----
+    // Set Dart entrypoint parameters on fake host.
+    when(mockHost.getAppBundlePath()).thenReturn("/my/bundle/path");
+    when(mockHost.getDartEntrypointFunctionName()).thenReturn("myEntrypoint");
+    List<String> dartEntrypointArgs = new ArrayList<String>(Arrays.asList("foo", "bar"));
+    when(mockHost.getDartEntrypointArgs()).thenReturn(dartEntrypointArgs);
+
+    // Create the DartEntrypoint that we expect to be executed
+    DartExecutor.DartEntrypoint dartEntrypoint =
+        new DartExecutor.DartEntrypoint("/my/bundle/path", "myEntrypoint");
+
+    // Create the real object that we're testing.
+    FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(mockHost);
+
+    // --- Execute the behavior under test ---
+    // Dart is executed in onStart().
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
+    delegate.onStart();
+
+    // Verify that the host's Dart entrypoint was used.
+    verify(mockFlutterEngine.getDartExecutor(), times(1))
+        .executeDartEntrypoint(any(DartExecutor.DartEntrypoint.class), eq(dartEntrypointArgs));
+  }
+
+  @Test
+  public void itExecutesDartLibraryUriProvidedByHost() {
+    when(mockHost.getAppBundlePath()).thenReturn("/my/bundle/path");
+    when(mockHost.getDartEntrypointFunctionName()).thenReturn("myEntrypoint");
+    when(mockHost.getDartEntrypointLibraryUri()).thenReturn("package:foo/bar.dart");
+
+    DartExecutor.DartEntrypoint expectedEntrypoint =
+        new DartExecutor.DartEntrypoint("/my/bundle/path", "package:foo/bar.dart", "myEntrypoint");
+
+    FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(mockHost);
+
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
+    delegate.onStart();
+
+    verify(mockFlutterEngine.getDartExecutor(), times(1))
+        .executeDartEntrypoint(eq(expectedEntrypoint), isNull());
   }
 
   @Test
@@ -341,12 +418,13 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Dart is executed in onStart().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
 
     // Verify that the host's Dart entrypoint was used.
-    verify(mockFlutterEngine.getDartExecutor(), times(1)).executeDartEntrypoint(eq(dartEntrypoint));
+    verify(mockFlutterEngine.getDartExecutor(), times(1))
+        .executeDartEntrypoint(eq(dartEntrypoint), isNull());
   }
 
   // "Attaching" to the surrounding Activity refers to Flutter being able to control
@@ -363,7 +441,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Flutter is attached to the surrounding Activity in onAttach.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Verify that the ActivityControlSurface was told to attach to an Activity.
     verify(mockFlutterEngine.getActivityControlSurface(), times(1))
@@ -393,7 +471,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Flutter is attached to the surrounding Activity in onAttach.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Make sure all of the other lifecycle methods can run safely as well
     // without a valid Activity
@@ -409,7 +487,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // Verify that the ActivityControlSurface was NOT told to attach or detach to an Activity.
     verify(mockFlutterEngine.getActivityControlSurface(), never())
-        .attachToActivity(any(Activity.class), any(Lifecycle.class));
+        .attachToActivity(any(ExclusiveAppComponent.class), any(Lifecycle.class));
     verify(mockFlutterEngine.getActivityControlSurface(), never()).detachFromActivity();
   }
 
@@ -420,7 +498,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Emulate the host and inform our delegate that the back button was pressed.
     delegate.onBackPressed();
@@ -436,7 +514,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Emulate the host and call the method that we expect to be forwarded.
     delegate.onRequestPermissionsResult(0, new String[] {}, new int[] {});
@@ -449,7 +527,7 @@ public class FlutterActivityAndFragmentDelegateTest {
   @Test
   public void
       itSendsInitialRouteFromIntentOnStartIfNoInitialRouteFromActivityAndShouldHandleDeeplinking() {
-    Intent intent = FlutterActivity.createDefaultIntent(RuntimeEnvironment.application);
+    Intent intent = FlutterActivity.createDefaultIntent(ctx);
     intent.setData(Uri.parse("http://myApp/custom/route?query=test"));
 
     ActivityController<FlutterActivity> activityController =
@@ -464,7 +542,8 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
     // Emulate app start.
     delegate.onStart();
 
@@ -476,7 +555,7 @@ public class FlutterActivityAndFragmentDelegateTest {
   @Test
   public void
       itSendsInitialRouteFromIntentOnStartIfNoInitialRouteFromActivityAndShouldHandleDeeplinkingWithQueryParameterAndFragment() {
-    Intent intent = FlutterActivity.createDefaultIntent(RuntimeEnvironment.application);
+    Intent intent = FlutterActivity.createDefaultIntent(ctx);
     intent.setData(Uri.parse("http://myApp/custom/route?query=test#fragment"));
 
     ActivityController<FlutterActivity> activityController =
@@ -491,7 +570,8 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
     // Emulate app start.
     delegate.onStart();
 
@@ -503,7 +583,7 @@ public class FlutterActivityAndFragmentDelegateTest {
   @Test
   public void
       itSendsInitialRouteFromIntentOnStartIfNoInitialRouteFromActivityAndShouldHandleDeeplinkingWithFragmentNoQueryParameter() {
-    Intent intent = FlutterActivity.createDefaultIntent(RuntimeEnvironment.application);
+    Intent intent = FlutterActivity.createDefaultIntent(ctx);
     intent.setData(Uri.parse("http://myApp/custom/route#fragment"));
 
     ActivityController<FlutterActivity> activityController =
@@ -518,7 +598,8 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
     // Emulate app start.
     delegate.onStart();
 
@@ -530,7 +611,7 @@ public class FlutterActivityAndFragmentDelegateTest {
   @Test
   public void
       itSendsInitialRouteFromIntentOnStartIfNoInitialRouteFromActivityAndShouldHandleDeeplinkingNoQueryParameter() {
-    Intent intent = FlutterActivity.createDefaultIntent(RuntimeEnvironment.application);
+    Intent intent = FlutterActivity.createDefaultIntent(ctx);
     intent.setData(Uri.parse("http://myApp/custom/route"));
 
     ActivityController<FlutterActivity> activityController =
@@ -545,7 +626,8 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
     // Emulate app start.
     delegate.onStart();
 
@@ -556,7 +638,7 @@ public class FlutterActivityAndFragmentDelegateTest {
   @Test
   public void itSendsdefaultInitialRouteOnStartIfNotDeepLinkingFromIntent() {
     // Creates an empty intent without launch uri.
-    Intent intent = FlutterActivity.createDefaultIntent(RuntimeEnvironment.application);
+    Intent intent = FlutterActivity.createDefaultIntent(ctx);
 
     ActivityController<FlutterActivity> activityController =
         Robolectric.buildActivity(FlutterActivity.class, intent);
@@ -570,7 +652,8 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
     // Emulate app start.
     delegate.onStart();
 
@@ -586,7 +669,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     Intent mockIntent = mock(Intent.class);
     when(mockIntent.getData()).thenReturn(Uri.parse("http://myApp/custom/route?query=test"));
@@ -599,6 +682,28 @@ public class FlutterActivityAndFragmentDelegateTest {
   }
 
   @Test
+  public void itDoesNotSendPushRouteMessageWhenOnNewIntentIsNonHierarchicalUri() {
+    when(mockHost.shouldHandleDeeplinking()).thenReturn(true);
+    // Create the real object that we're testing.
+    FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(mockHost);
+
+    // --- Execute the behavior under test ---
+    // The FlutterEngine is set up in onAttach().
+    delegate.onAttach(ctx);
+
+    Intent mockIntent = mock(Intent.class);
+
+    // mailto: URIs are non-hierarchical
+    when(mockIntent.getData()).thenReturn(Uri.parse("mailto:test@test.com"));
+
+    // Emulate the host and call the method
+    delegate.onNewIntent(mockIntent);
+
+    // Verify that the navigation channel was not given a push route message.
+    verify(mockFlutterEngine.getNavigationChannel(), times(0)).pushRoute("mailto:test@test.com");
+  }
+
+  @Test
   public void itSendsPushRouteMessageWhenOnNewIntentWithQueryParameterAndFragment() {
     when(mockHost.shouldHandleDeeplinking()).thenReturn(true);
     // Create the real object that we're testing.
@@ -606,7 +711,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     Intent mockIntent = mock(Intent.class);
     when(mockIntent.getData())
@@ -627,7 +732,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     Intent mockIntent = mock(Intent.class);
     when(mockIntent.getData()).thenReturn(Uri.parse("http://myApp/custom/route#fragment"));
@@ -646,7 +751,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     Intent mockIntent = mock(Intent.class);
     when(mockIntent.getData()).thenReturn(Uri.parse("http://myApp/custom/route"));
@@ -664,7 +769,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Emulate the host and call the method that we expect to be forwarded.
     delegate.onNewIntent(mock(Intent.class));
@@ -680,7 +785,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Emulate the host and call the method that we expect to be forwarded.
     delegate.onActivityResult(0, 0, null);
@@ -697,7 +802,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Emulate the host and call the method that we expect to be forwarded.
     delegate.onUserLeaveHint();
@@ -713,7 +818,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // Test assumes no frames have been displayed.
     verify(mockHost, times(0)).onFlutterUiDisplayed();
@@ -729,8 +834,8 @@ public class FlutterActivityAndFragmentDelegateTest {
     delegate.onTrimMemory(TRIM_MEMORY_COMPLETE);
     delegate.onTrimMemory(TRIM_MEMORY_MODERATE);
     delegate.onTrimMemory(TRIM_MEMORY_UI_HIDDEN);
-    verify(mockFlutterEngine.getDartExecutor(), times(5)).notifyLowMemoryWarning();
-    verify(mockFlutterEngine.getSystemChannel(), times(5)).sendMemoryPressureWarning();
+    verify(mockFlutterEngine.getDartExecutor(), times(0)).notifyLowMemoryWarning();
+    verify(mockFlutterEngine.getSystemChannel(), times(0)).sendMemoryPressureWarning();
 
     verify(mockHost, times(0)).onFlutterUiDisplayed();
 
@@ -745,8 +850,8 @@ public class FlutterActivityAndFragmentDelegateTest {
     verify(mockHost, times(1)).onFlutterUiDisplayed();
 
     delegate.onTrimMemory(TRIM_MEMORY_RUNNING_MODERATE);
-    verify(mockFlutterEngine.getDartExecutor(), times(5)).notifyLowMemoryWarning();
-    verify(mockFlutterEngine.getSystemChannel(), times(5)).sendMemoryPressureWarning();
+    verify(mockFlutterEngine.getDartExecutor(), times(0)).notifyLowMemoryWarning();
+    verify(mockFlutterEngine.getSystemChannel(), times(0)).sendMemoryPressureWarning();
 
     delegate.onTrimMemory(TRIM_MEMORY_RUNNING_LOW);
     delegate.onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL);
@@ -754,25 +859,8 @@ public class FlutterActivityAndFragmentDelegateTest {
     delegate.onTrimMemory(TRIM_MEMORY_COMPLETE);
     delegate.onTrimMemory(TRIM_MEMORY_MODERATE);
     delegate.onTrimMemory(TRIM_MEMORY_UI_HIDDEN);
-    verify(mockFlutterEngine.getDartExecutor(), times(11)).notifyLowMemoryWarning();
-    verify(mockFlutterEngine.getSystemChannel(), times(11)).sendMemoryPressureWarning();
-  }
-
-  @Test
-  public void itNotifiesDartExecutorAndSendsMessageOverSystemChannelWhenInformedOfLowMemory() {
-    // Create the real object that we're testing.
-    FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(mockHost);
-
-    // --- Execute the behavior under test ---
-    // The FlutterEngine is set up in onAttach().
-    delegate.onAttach(RuntimeEnvironment.application);
-
-    // Emulate the host and call the method that we expect to be forwarded.
-    delegate.onLowMemory();
-
-    // Verify that the call was forwarded to the engine.
-    verify(mockFlutterEngine.getDartExecutor(), times(1)).notifyLowMemoryWarning();
-    verify(mockFlutterEngine.getSystemChannel(), times(1)).sendMemoryPressureWarning();
+    verify(mockFlutterEngine.getDartExecutor(), times(6)).notifyLowMemoryWarning();
+    verify(mockFlutterEngine.getSystemChannel(), times(6)).sendMemoryPressureWarning();
   }
 
   @Test
@@ -786,7 +874,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Push the delegate through all lifecycle methods all the way to destruction.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
     delegate.onResume();
@@ -810,7 +898,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Push the delegate through all lifecycle methods all the way to destruction.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
     delegate.onResume();
@@ -841,7 +929,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Push the delegate through all lifecycle methods all the way to destruction.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
     delegate.onResume();
@@ -873,7 +961,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // --- Execute the behavior under test ---
     // Push the delegate through all lifecycle methods all the way to destruction.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
     delegate.onCreateView(null, null, null, 0, true);
     delegate.onStart();
     delegate.onResume();
@@ -893,7 +981,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // We're testing lifecycle behaviors, which require/expect that certain methods have already
     // been executed by the time they run. Therefore, we run those expected methods first.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // --- Execute the behavior under test ---
     boolean shouldDelayFirstAndroidViewDraw = true;
@@ -909,7 +997,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // We're testing lifecycle behaviors, which require/expect that certain methods have already
     // been executed by the time they run. Therefore, we run those expected methods first.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // --- Execute the behavior under test ---
     boolean shouldDelayFirstAndroidViewDraw = false;
@@ -926,7 +1014,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // We're testing lifecycle behaviors, which require/expect that certain methods have already
     // been executed by the time they run. Therefore, we run those expected methods first.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // --- Execute the behavior under test ---
     boolean shouldDelayFirstAndroidViewDraw = true;
@@ -935,6 +1023,42 @@ public class FlutterActivityAndFragmentDelegateTest {
         () -> {
           delegate.onCreateView(null, null, null, 0, shouldDelayFirstAndroidViewDraw);
         });
+  }
+
+  @Test
+  public void itChangesFlutterViewVisibilityWhenOnStartAndOnStop() {
+    // ---- Test setup ----
+    // Create the real object that we're testing.
+    FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(mockHost);
+
+    // --- Execute the behavior under test ---
+    delegate.onAttach(ctx);
+    delegate.onCreateView(null, null, null, 0, true);
+    delegate.onStart();
+    // Verify that the flutterView is visible.
+    assertEquals(View.VISIBLE, delegate.flutterView.getVisibility());
+    delegate.onStop();
+    // Verify that the flutterView is gone.
+    assertEquals(View.GONE, delegate.flutterView.getVisibility());
+    delegate.onStart();
+    // Verify that the flutterView is visible.
+    assertEquals(View.VISIBLE, delegate.flutterView.getVisibility());
+
+    delegate.flutterView.setVisibility(View.INVISIBLE);
+    delegate.onStop();
+    // Verify that the flutterView is gone.
+    assertEquals(View.GONE, delegate.flutterView.getVisibility());
+    delegate.onStart();
+    // Verify that the flutterView is invisible.
+    assertEquals(View.INVISIBLE, delegate.flutterView.getVisibility());
+
+    delegate.flutterView.setVisibility(View.GONE);
+    delegate.onStop();
+    // Verify that the flutterView is gone.
+    assertEquals(View.GONE, delegate.flutterView.getVisibility());
+    delegate.onStart();
+    // Verify that the flutterView is gone.
+    assertEquals(View.GONE, delegate.flutterView.getVisibility());
   }
 
   @Test
@@ -948,7 +1072,7 @@ public class FlutterActivityAndFragmentDelegateTest {
 
     // We're testing lifecycle behaviors, which require/expect that certain methods have already
     // been executed by the time they run. Therefore, we run those expected methods first.
-    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onAttach(ctx);
 
     // --- Execute the behavior under test ---
     boolean shouldDelayFirstAndroidViewDraw = true;
@@ -975,6 +1099,10 @@ public class FlutterActivityAndFragmentDelegateTest {
     when(fakeMessageBuilder.setPlatformBrightness(any(SettingsChannel.PlatformBrightness.class)))
         .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setTextScaleFactor(any(Float.class))).thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setNativeSpellCheckServiceDefined(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
+    when(fakeMessageBuilder.setBrieflyShowPassword(any(Boolean.class)))
+        .thenReturn(fakeMessageBuilder);
     when(fakeMessageBuilder.setUse24HourFormat(any(Boolean.class))).thenReturn(fakeMessageBuilder);
     when(fakeSettingsChannel.startMessage()).thenReturn(fakeMessageBuilder);
 
@@ -983,7 +1111,6 @@ public class FlutterActivityAndFragmentDelegateTest {
     when(engine.getAccessibilityChannel()).thenReturn(mock(AccessibilityChannel.class));
     when(engine.getActivityControlSurface()).thenReturn(mock(ActivityControlSurface.class));
     when(engine.getDartExecutor()).thenReturn(mock(DartExecutor.class));
-    when(engine.getKeyEventChannel()).thenReturn(mock(KeyEventChannel.class));
     when(engine.getLifecycleChannel()).thenReturn(mock(LifecycleChannel.class));
     when(engine.getLocalizationChannel()).thenReturn(mock(LocalizationChannel.class));
     when(engine.getLocalizationPlugin()).thenReturn(mock(LocalizationPlugin.class));

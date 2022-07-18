@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
 import 'dart:math' as math;
 
 import 'package:ui/ui.dart' as ui;
 
-import 'dom_renderer.dart';
+import 'dom.dart';
+import 'util.dart';
 
 /// Renders an RRect using path primitives.
 abstract class RRectRenderer {
@@ -183,7 +183,7 @@ abstract class RRectRenderer {
 
 /// Renders RRect to a 2d canvas.
 class RRectToCanvasRenderer extends RRectRenderer {
-  final html.CanvasRenderingContext2D context;
+  final DomCanvasRenderingContext2D context;
   RRectToCanvasRenderer(this.context);
   @override
   void beginPath() {
@@ -203,7 +203,7 @@ class RRectToCanvasRenderer extends RRectRenderer {
   @override
   void ellipse(double centerX, double centerY, double radiusX, double radiusY,
       double rotation, double startAngle, double endAngle, bool antiClockwise) {
-    DomRenderer.ellipse(context, centerX, centerY, radiusX, radiusY, rotation, startAngle,
+    drawEllipse(context, centerX, centerY, radiusX, radiusY, rotation, startAngle,
         endAngle, antiClockwise);
   }
 }

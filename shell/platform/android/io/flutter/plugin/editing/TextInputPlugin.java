@@ -43,8 +43,8 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   @NonNull private final TextInputChannel textInputChannel;
   @NonNull private InputTarget inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, 0);
   @Nullable private TextInputChannel.Configuration configuration;
-  @Nullable private SparseArray<TextInputChannel.Configuration> mAutofillConfigurations;
-  @Nullable private ListenableEditingState mEditable;
+  @Nullable private SparseArray<TextInputChannel.Configuration> autofillConfiguration;
+  @NonNull private ListenableEditingState mEditable;
   private boolean mRestartInputPending;
   @Nullable private InputConnection lastInputConnection;
   @NonNull private PlatformViewsController platformViewsController;
@@ -62,10 +62,12 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
   @SuppressLint("NewApi")
   public TextInputPlugin(
-      View view,
+      @NonNull View view,
       @NonNull TextInputChannel textInputChannel,
       @NonNull PlatformViewsController platformViewsController) {
     mView = view;
+    // Create a default object.
+    mEditable = new ListenableEditingState(null, mView);
     mImm = (InputMethodManager) view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       afm = view.getContext().getSystemService(AutofillManager.class);
@@ -103,7 +105,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
           @Override
           public void hide() {
-            if (inputTarget.type == InputTarget.Type.HC_PLATFORM_VIEW) {
+            if (inputTarget.type == InputTarget.Type.PHYSICAL_DISPLAY_PLATFORM_VIEW) {
               notifyViewExited();
             } else {
               hideTextInput(mView);
@@ -194,7 +196,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
    * display to another.
    */
   public void lockPlatformViewInputConnection() {
-    if (inputTarget.type == InputTarget.Type.VD_PLATFORM_VIEW) {
+    if (inputTarget.type == InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW) {
       isInputConnectionLocked = true;
     }
   }
@@ -205,7 +207,9 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
    * <p>See also: @{link lockPlatformViewInputConnection}.
    */
   public void unlockPlatformViewInputConnection() {
-    isInputConnectionLocked = false;
+    if (inputTarget.type == InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW) {
+      isInputConnectionLocked = false;
+    }
   }
 
   /**
@@ -218,9 +222,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     platformViewsController.detachTextInputPlugin();
     textInputChannel.setTextInputMethodHandler(null);
     notifyViewExited();
-    if (mEditable != null) {
-      mEditable.removeEditingStateListener(this);
-    }
+    mEditable.removeEditingStateListener(this);
     if (imeSyncCallback != null) {
       imeSyncCallback.remove();
     }
@@ -285,18 +287,19 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     return textType;
   }
 
+  @Nullable
   public InputConnection createInputConnection(
-      View view, KeyboardManager keyboardManager, EditorInfo outAttrs) {
+      @NonNull View view, @NonNull KeyboardManager keyboardManager, @NonNull EditorInfo outAttrs) {
     if (inputTarget.type == InputTarget.Type.NO_TARGET) {
       lastInputConnection = null;
       return null;
     }
 
-    if (inputTarget.type == InputTarget.Type.HC_PLATFORM_VIEW) {
+    if (inputTarget.type == InputTarget.Type.PHYSICAL_DISPLAY_PLATFORM_VIEW) {
       return null;
     }
 
-    if (inputTarget.type == InputTarget.Type.VD_PLATFORM_VIEW) {
+    if (inputTarget.type == InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW) {
       if (isInputConnectionLocked) {
         return lastInputConnection;
       }
@@ -361,8 +364,8 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
    * input connection.
    */
   public void clearPlatformViewClient(int platformViewId) {
-    if ((inputTarget.type == InputTarget.Type.VD_PLATFORM_VIEW
-            || inputTarget.type == InputTarget.Type.HC_PLATFORM_VIEW)
+    if ((inputTarget.type == InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW
+            || inputTarget.type == InputTarget.Type.PHYSICAL_DISPLAY_PLATFORM_VIEW)
         && inputTarget.id == platformViewId) {
       inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, 0);
       notifyViewExited();
@@ -372,7 +375,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     }
   }
 
-  public void sendTextInputAppPrivateCommand(String action, Bundle data) {
+  public void sendTextInputAppPrivateCommand(@NonNull String action, @NonNull Bundle data) {
     mImm.sendAppPrivateCommand(mView, action, data);
   }
 
@@ -415,9 +418,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, client);
     }
 
-    if (mEditable != null) {
-      mEditable.removeEditingStateListener(this);
-    }
+    mEditable.removeEditingStateListener(this);
     mEditable =
         new ListenableEditingState(
             configuration.autofill != null ? configuration.autofill.editState : null, mView);
@@ -435,14 +436,15 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     if (usesVirtualDisplay) {
       // We need to make sure that the Flutter view is focused so that no imm operations get short
       // circuited.
-      // Not asking for focus here specifically manifested in a but on API 28 devices where the
+      // Not asking for focus here specifically manifested in a bug on API 28 devices where the
       // platform view's request to show a keyboard was ignored.
       mView.requestFocus();
-      inputTarget = new InputTarget(InputTarget.Type.VD_PLATFORM_VIEW, platformViewId);
+      inputTarget = new InputTarget(InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW, platformViewId);
       mImm.restartInput(mView);
       mRestartInputPending = false;
     } else {
-      inputTarget = new InputTarget(InputTarget.Type.HC_PLATFORM_VIEW, platformViewId);
+      inputTarget =
+          new InputTarget(InputTarget.Type.PHYSICAL_DISPLAY_PLATFORM_VIEW, platformViewId);
       lastInputConnection = null;
     }
   }
@@ -535,32 +537,26 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
   @VisibleForTesting
   void clearTextInputClient() {
-    if (inputTarget.type == InputTarget.Type.VD_PLATFORM_VIEW) {
+    if (inputTarget.type == InputTarget.Type.VIRTUAL_DISPLAY_PLATFORM_VIEW) {
       // This only applies to platform views that use a virtual display.
       // Focus changes in the framework tree have no guarantees on the order focus nodes are
-      // notified. A node
-      // that lost focus may be notified before or after a node that gained focus.
+      // notified. A node that lost focus may be notified before or after a node that gained focus.
       // When moving the focus from a Flutter text field to an AndroidView, it is possible that the
-      // Flutter text
-      // field's focus node will be notified that it lost focus after the AndroidView was notified
-      // that it gained
-      // focus. When this happens the text field will send a clearTextInput command which we ignore.
+      // Flutter text field's focus node will be notified that it lost focus after the AndroidView
+      // was notified that it gained focus. When this happens the text field will send a
+      // clearTextInput command which we ignore.
       // By doing this we prevent the framework from clearing a platform view input client (the only
-      // way to do so
-      // is to set a new framework text client). I don't see an obvious use case for "clearing" a
-      // platform view's
-      // text input client, and it may be error prone as we don't know how the platform view manages
-      // the input
-      // connection and we probably shouldn't interfere.
+      // way to do so is to set a new framework text client). I don't see an obvious use case for
+      // "clearing" a platform view's text input client, and it may be error prone as we don't know
+      // how the platform view manages the input connection and we probably shouldn't interfere.
       // If we ever want to allow the framework to clear a platform view text client we should
-      // probably consider
-      // changing the focus manager such that focus nodes that lost focus are notified before focus
-      // nodes that
-      // gained focus as part of the same focus event.
+      // probably consider changing the focus manager such that focus nodes that lost focus are
+      // notified before focus nodes that gained focus as part of the same focus event.
       return;
     }
     mEditable.removeEditingStateListener(this);
     notifyViewExited();
+    configuration = null;
     updateAutofillConfigurationIfNeeded(null);
     inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, 0);
     unlockPlatformViewInputConnection();
@@ -573,12 +569,12 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       // InputConnection is managed by the TextInputPlugin, and events are forwarded to the Flutter
       // framework.
       FRAMEWORK_CLIENT,
-      // InputConnection is managed by an embedded platform view that is backed by a virtual
-      // display (VD).
-      VD_PLATFORM_VIEW,
-      // InputConnection is managed by an embedded platform view that is embeded in the Android view
-      // hierarchy, and uses hybrid composition (HC).
-      HC_PLATFORM_VIEW,
+      // InputConnection is managed by a platform view that is presented on a virtual display.
+      VIRTUAL_DISPLAY_PLATFORM_VIEW,
+      // InputConnection is managed by a platform view that is embedded in the activity's view
+      // hierarchy. This view hierarchy is displayed in a physical display within the aplication
+      // display area.
+      PHYSICAL_DISPLAY_PLATFORM_VIEW,
     }
 
     public InputTarget(@NonNull Type type, int id) {
@@ -595,7 +591,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   // -------- Start: KeyboardManager Synchronous Responder -------
-  public boolean handleKeyEvent(KeyEvent keyEvent) {
+  public boolean handleKeyEvent(@NonNull KeyEvent keyEvent) {
     if (!getInputMethodManager().isAcceptingText() || lastInputConnection == null) {
       return false;
     }
@@ -684,7 +680,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   // have changed. However if the value of an unfocused EditableText is changed in the framework,
   // such change will not be sent to the text input plugin until the next TextInput.attach call.
   private boolean needsAutofill() {
-    return mAutofillConfigurations != null;
+    return autofillConfiguration != null;
   }
 
   private void notifyViewEntered() {
@@ -729,21 +725,20 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
     if (configuration == null || configuration.autofill == null) {
       // Disables autofill if the configuration doesn't have an autofill field.
-      mAutofillConfigurations = null;
+      autofillConfiguration = null;
       return;
     }
 
     final TextInputChannel.Configuration[] configurations = configuration.fields;
-    mAutofillConfigurations = new SparseArray<>();
+    autofillConfiguration = new SparseArray<>();
 
     if (configurations == null) {
-      mAutofillConfigurations.put(
-          configuration.autofill.uniqueIdentifier.hashCode(), configuration);
+      autofillConfiguration.put(configuration.autofill.uniqueIdentifier.hashCode(), configuration);
     } else {
       for (TextInputChannel.Configuration config : configurations) {
         TextInputChannel.Configuration.Autofill autofill = config.autofill;
         if (autofill != null) {
-          mAutofillConfigurations.put(autofill.uniqueIdentifier.hashCode(), config);
+          autofillConfiguration.put(autofill.uniqueIdentifier.hashCode(), config);
           afm.notifyValueChanged(
               mView,
               autofill.uniqueIdentifier.hashCode(),
@@ -753,16 +748,16 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     }
   }
 
-  public void onProvideAutofillVirtualStructure(ViewStructure structure, int flags) {
+  public void onProvideAutofillVirtualStructure(@NonNull ViewStructure structure, int flags) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !needsAutofill()) {
       return;
     }
 
     final String triggerIdentifier = configuration.autofill.uniqueIdentifier;
     final AutofillId parentId = structure.getAutofillId();
-    for (int i = 0; i < mAutofillConfigurations.size(); i++) {
-      final int autofillId = mAutofillConfigurations.keyAt(i);
-      final TextInputChannel.Configuration config = mAutofillConfigurations.valueAt(i);
+    for (int i = 0; i < autofillConfiguration.size(); i++) {
+      final int autofillId = autofillConfiguration.keyAt(i);
+      final TextInputChannel.Configuration config = autofillConfiguration.valueAt(i);
       final TextInputChannel.Configuration.Autofill autofill = config.autofill;
       if (autofill == null) {
         continue;
@@ -771,7 +766,11 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       structure.addChildCount(1);
       final ViewStructure child = structure.newChild(i);
       child.setAutofillId(parentId, autofillId);
-      child.setAutofillHints(autofill.hints);
+      // Don't set hints when there's none.
+      // See https://github.com/flutter/flutter/issues/98505.
+      if (autofill.hints.length > 0) {
+        child.setAutofillHints(autofill.hints);
+      }
       child.setAutofillType(View.AUTOFILL_TYPE_TEXT);
       child.setVisibility(View.VISIBLE);
       if (autofill.hintText != null) {
@@ -797,21 +796,21 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     }
   }
 
-  public void autofill(SparseArray<AutofillValue> values) {
+  public void autofill(@NonNull SparseArray<AutofillValue> values) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       return;
     }
 
-    final TextInputChannel.Configuration.Autofill currentAutofill = configuration.autofill;
-    if (currentAutofill == null) {
+    if (configuration == null || autofillConfiguration == null || configuration.autofill == null) {
       return;
     }
 
+    final TextInputChannel.Configuration.Autofill currentAutofill = configuration.autofill;
     final HashMap<String, TextInputChannel.TextEditState> editingValues = new HashMap<>();
     for (int i = 0; i < values.size(); i++) {
       int virtualId = values.keyAt(i);
 
-      final TextInputChannel.Configuration config = mAutofillConfigurations.get(virtualId);
+      final TextInputChannel.Configuration config = autofillConfiguration.get(virtualId);
       if (config == null || config.autofill == null) {
         continue;
       }

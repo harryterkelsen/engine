@@ -4,15 +4,18 @@
 
 #include "flutter/flow/layers/opacity_layer.h"
 
-#include "flutter/fml/trace_event.h"
+#include "flutter/flow/layers/cacheable_layer.h"
 #include "third_party/skia/include/core/SkPaint.h"
 
 namespace flutter {
 
+// the opacity_layer couldn't cache itself, so the cache_threshold is the
+// max_int
 OpacityLayer::OpacityLayer(SkAlpha alpha, const SkPoint& offset)
-    : alpha_(alpha), offset_(offset) {}
-
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
+    : CacheableContainerLayer(std::numeric_limits<int>::max(), true),
+      alpha_(alpha),
+      offset_(offset),
+      children_can_accept_opacity_(false) {}
 
 void OpacityLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
@@ -28,11 +31,9 @@ void OpacityLayer::Diff(DiffContext* context, const Layer* old_layer) {
   context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
 }
 
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
-
 void OpacityLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   TRACE_EVENT0("flutter", "OpacityLayer::Preroll");
-  FML_DCHECK(!GetChildContainer()->layers().empty());  // We can't be a leaf.
+  FML_DCHECK(!layers().empty());  // We can't be a leaf.
 
   SkMatrix child_matrix = matrix;
   child_matrix.preTranslate(offset_.fX, offset_.fY);
@@ -44,18 +45,34 @@ void OpacityLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   context->mutators_stack.PushTransform(
       SkMatrix::Translate(offset_.fX, offset_.fY));
   context->mutators_stack.PushOpacity(alpha_);
+
+  AutoCache auto_cache =
+      AutoCache(layer_raster_cache_item_.get(), context, matrix);
   Layer::AutoPrerollSaveLayerState save =
       Layer::AutoPrerollSaveLayerState::Create(context);
+
+  // Collect inheritance information on our children in Preroll so that
+  // we can decide whether or not to use a saveLayer in Paint.
+  context->subtree_can_inherit_opacity = true;
+  // ContainerLayer will turn the flag off if any children are
+  // incompatible or if they overlap
   ContainerLayer::Preroll(context, child_matrix);
+  // We store the inheritance ability of our children for |Paint|
+  set_children_can_accept_opacity(context->subtree_can_inherit_opacity);
+
+  // Now we let our parent layers know that we, too, can inherit opacity
+  // regardless of what our children are capable of
+  context->subtree_can_inherit_opacity = true;
   context->mutators_stack.Pop();
   context->mutators_stack.Pop();
 
-  {
-    set_paint_bounds(paint_bounds().makeOffset(offset_.fX, offset_.fY));
-#ifndef SUPPORT_FRACTIONAL_TRANSLATION
-    child_matrix = RasterCache::GetIntegralTransCTM(child_matrix);
-#endif
-    TryToPrepareRasterCache(context, GetCacheableChild(), child_matrix);
+  set_paint_bounds(paint_bounds().makeOffset(offset_.fX, offset_.fY));
+
+  if (children_can_accept_opacity()) {
+    // For opacity layer, we can use raster_cache children only when the
+    // children can't accept opacity so if the children_can_accept_opacity we
+    // should tell the AutoCache object don't do raster_cache.
+    auto_cache.ShouldNotBeCached();
   }
 
   // Restore cull_rect
@@ -66,20 +83,23 @@ void OpacityLayer::Paint(PaintContext& context) const {
   TRACE_EVENT0("flutter", "OpacityLayer::Paint");
   FML_DCHECK(needs_painting(context));
 
-  SkPaint paint;
-  paint.setAlpha(alpha_);
-
   SkAutoCanvasRestore save(context.internal_nodes_canvas, true);
   context.internal_nodes_canvas->translate(offset_.fX, offset_.fY);
 
-#ifndef SUPPORT_FRACTIONAL_TRANSLATION
-  context.internal_nodes_canvas->setMatrix(RasterCache::GetIntegralTransCTM(
-      context.leaf_nodes_canvas->getTotalMatrix()));
-#endif
+  SkScalar inherited_opacity = context.inherited_opacity;
+  SkScalar subtree_opacity = opacity() * inherited_opacity;
 
-  if (context.raster_cache &&
-      context.raster_cache->Draw(GetCacheableChild(),
-                                 *context.leaf_nodes_canvas, &paint)) {
+  if (children_can_accept_opacity()) {
+    context.inherited_opacity = subtree_opacity;
+    PaintChildren(context);
+    context.inherited_opacity = inherited_opacity;
+    return;
+  }
+
+  SkPaint paint;
+  paint.setAlphaf(subtree_opacity);
+
+  if (layer_raster_cache_item_->Draw(context, &paint)) {
     return;
   }
 
@@ -98,7 +118,9 @@ void OpacityLayer::Paint(PaintContext& context) const {
 
   Layer::AutoSaveLayer save_layer =
       Layer::AutoSaveLayer::Create(context, saveLayerBounds, &paint);
+  context.inherited_opacity = SK_Scalar1;
   PaintChildren(context);
+  context.inherited_opacity = inherited_opacity;
 }
 
 }  // namespace flutter

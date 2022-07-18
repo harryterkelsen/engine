@@ -26,6 +26,9 @@ void _updateWindowMetrics(
   double systemGestureInsetBottom,
   double systemGestureInsetLeft,
   double physicalTouchSlop,
+  List<double> displayFeaturesBounds,
+  List<int> displayFeaturesType,
+  List<int> displayFeaturesState,
 ) {
   PlatformDispatcher.instance._updateWindowMetrics(
     id,
@@ -45,6 +48,9 @@ void _updateWindowMetrics(
     systemGestureInsetBottom,
     systemGestureInsetLeft,
     physicalTouchSlop,
+    displayFeaturesBounds,
+    displayFeaturesType,
+    displayFeaturesState,
   );
 }
 
@@ -89,11 +95,6 @@ void _dispatchPointerDataPacket(ByteData packet) {
 }
 
 @pragma('vm:entry-point')
-void _dispatchKeyData(ByteData packet, int responseId) {
-  PlatformDispatcher.instance._dispatchKeyData(packet, responseId);
-}
-
-@pragma('vm:entry-point')
 void _dispatchSemanticsAction(int id, int action, ByteData? args) {
   PlatformDispatcher.instance._dispatchSemanticsAction(id, action, args);
 }
@@ -114,27 +115,26 @@ void _drawFrame() {
   PlatformDispatcher.instance._drawFrame();
 }
 
+@pragma('vm:entry-point')
+bool _onError(Object error, StackTrace? stackTrace) {
+  return PlatformDispatcher.instance._dispatchError(error, stackTrace ?? StackTrace.empty);
+}
+
 // ignore: always_declare_return_types, prefer_generic_function_type_aliases
 typedef _ListStringArgFunction(List<String> args);
 
 @pragma('vm:entry-point')
-void _runMainZoned(Function startMainIsolateFunction,
-                   Function userMainFunction,
-                   List<String> args) {
+void _runMain(Function startMainIsolateFunction,
+              Function userMainFunction,
+              List<String> args) {
   startMainIsolateFunction(() {
-    runZonedGuarded<void>(() {
-      if (userMainFunction is _ListStringArgFunction) {
-        (userMainFunction as dynamic)(args);
-      } else {
-        userMainFunction();
-      }
-    }, (Object error, StackTrace stackTrace) {
-      _reportUnhandledException(error.toString(), stackTrace.toString());
-    });
+    if (userMainFunction is _ListStringArgFunction) {
+      userMainFunction(args);
+    } else {
+      userMainFunction();
+    }
   }, null);
 }
-
-void _reportUnhandledException(String error, String stackTrace) native 'PlatformConfiguration_reportUnhandledException';
 
 /// Invokes [callback] inside the given [zone].
 void _invoke(void Function()? callback, Zone zone) {
@@ -232,7 +232,7 @@ bool _isLoopback(String host) {
 @pragma('vm:entry-point')
 void Function(Uri) _getHttpConnectionHookClosure(bool mayInsecurelyConnectToAllDomains) {
   return (Uri uri) {
-      final dynamic zoneOverride = Zone.current[#flutter.io.allow_http];
+      final Object? zoneOverride = Zone.current[#flutter.io.allow_http];
       if (zoneOverride == true) {
         return;
       }

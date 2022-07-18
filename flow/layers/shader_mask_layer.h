@@ -5,22 +5,18 @@
 #ifndef FLUTTER_FLOW_LAYERS_SHADER_MASK_LAYER_H_
 #define FLUTTER_FLOW_LAYERS_SHADER_MASK_LAYER_H_
 
-#include "flutter/flow/layers/container_layer.h"
+#include "flutter/flow/layers/cacheable_layer.h"
 #include "third_party/skia/include/core/SkShader.h"
 
 namespace flutter {
 
-class ShaderMaskLayer : public ContainerLayer {
+class ShaderMaskLayer : public CacheableContainerLayer {
  public:
   ShaderMaskLayer(sk_sp<SkShader> shader,
                   const SkRect& mask_rect,
                   SkBlendMode blend_mode);
 
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
-
   void Diff(DiffContext* context, const Layer* old_layer) override;
-
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
 
   void Preroll(PrerollContext* context, const SkMatrix& matrix) override;
 

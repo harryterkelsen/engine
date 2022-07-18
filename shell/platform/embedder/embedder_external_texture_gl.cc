@@ -5,6 +5,9 @@
 #include "flutter/shell/platform/embedder/embedder_external_texture_gl.h"
 
 #include "flutter/fml/logging.h"
+#include "third_party/skia/include/core/SkAlphaType.h"
+#include "third_party/skia/include/core/SkColorSpace.h"
+#include "third_party/skia/include/core/SkColorType.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkSize.h"
 #include "third_party/skia/include/gpu/GrBackendSurface.h"
@@ -26,7 +29,8 @@ void EmbedderExternalTextureGL::Paint(SkCanvas& canvas,
                                       const SkRect& bounds,
                                       bool freeze,
                                       GrDirectContext* context,
-                                      const SkSamplingOptions& sampling) {
+                                      const SkSamplingOptions& sampling,
+                                      const SkPaint* paint) {
   if (last_image_ == nullptr) {
     last_image_ =
         ResolveTexture(Id(),                                           //
@@ -37,9 +41,9 @@ void EmbedderExternalTextureGL::Paint(SkCanvas& canvas,
 
   if (last_image_) {
     if (bounds != SkRect::Make(last_image_->bounds())) {
-      canvas.drawImageRect(last_image_, bounds, sampling);
+      canvas.drawImageRect(last_image_, bounds, sampling, paint);
     } else {
-      canvas.drawImage(last_image_, bounds.x(), bounds.y(), sampling, nullptr);
+      canvas.drawImage(last_image_, bounds.x(), bounds.y(), sampling, paint);
     }
   }
 }

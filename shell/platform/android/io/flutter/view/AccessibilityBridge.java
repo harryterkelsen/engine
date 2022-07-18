@@ -137,8 +137,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   @NonNull private final AccessibilityViewEmbedder accessibilityViewEmbedder;
 
   // The delegate for interacting with embedded platform views. Used to embed accessibility data for
-  // an embedded
-  // view in the accessibility tree.
+  // an embedded view in the accessibility tree.
   @NonNull private final PlatformViewsAccessibilityDelegate platformViewsAccessibilityDelegate;
 
   // Android's {@link ContentResolver}, which is used to observe the global
@@ -386,11 +385,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       @NonNull AccessibilityChannel accessibilityChannel,
       @NonNull AccessibilityManager accessibilityManager,
       @NonNull ContentResolver contentResolver,
-      // This should be @NonNull once the plumbing for
-      // io.flutter.embedding.engine.android.FlutterView is done.
-      // TODO(mattcarrol): Add the annotation once the plumbing is done.
-      // https://github.com/flutter/flutter/issues/29618
-      PlatformViewsAccessibilityDelegate platformViewsAccessibilityDelegate) {
+      @NonNull PlatformViewsAccessibilityDelegate platformViewsAccessibilityDelegate) {
     this(
         rootAccessibilityView,
         accessibilityChannel,
@@ -407,11 +402,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       @NonNull AccessibilityManager accessibilityManager,
       @NonNull ContentResolver contentResolver,
       @NonNull AccessibilityViewEmbedder accessibilityViewEmbedder,
-      // This should be @NonNull once the plumbing for
-      // io.flutter.embedding.engine.android.FlutterView is done.
-      // TODO(mattcarrol): Add the annotation once the plumbing is done.
-      // https://github.com/flutter/flutter/issues/29618
-      PlatformViewsAccessibilityDelegate platformViewsAccessibilityDelegate) {
+      @NonNull PlatformViewsAccessibilityDelegate platformViewsAccessibilityDelegate) {
     this.rootAccessibilityView = rootAccessibilityView;
     this.accessibilityChannel = accessibilityChannel;
     this.accessibilityManager = accessibilityManager;
@@ -464,13 +455,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       this.contentResolver.registerContentObserver(transitionUri, false, animationScaleObserver);
     }
 
-    // platformViewsAccessibilityDelegate should be @NonNull once the plumbing
-    // for io.flutter.embedding.engine.android.FlutterView is done.
-    // TODO(mattcarrol): Remove the null check once the plumbing is done.
-    // https://github.com/flutter/flutter/issues/29618
-    if (platformViewsAccessibilityDelegate != null) {
-      platformViewsAccessibilityDelegate.attachAccessibilityBridge(this);
-    }
+    platformViewsAccessibilityDelegate.attachAccessibilityBridge(this);
   }
 
   /**
@@ -482,13 +467,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
    */
   public void release() {
     isReleased = true;
-    // platformViewsAccessibilityDelegate should be @NonNull once the plumbing
-    // for io.flutter.embedding.engine.android.FlutterView is done.
-    // TODO(mattcarrol): Remove the null check once the plumbing is done.
-    // https://github.com/flutter/flutter/issues/29618
-    if (platformViewsAccessibilityDelegate != null) {
-      platformViewsAccessibilityDelegate.detachAccessibiltyBridge();
-    }
+    platformViewsAccessibilityDelegate.detachAccessibilityBridge();
     setOnAccessibilityChangeListener(null);
     accessibilityManager.removeAccessibilityStateChangeListener(accessibilityStateChangeListener);
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
@@ -603,9 +582,12 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
     //
     // See the case down below for how hybrid composition is handled.
     if (semanticsNode.platformViewId != -1) {
-      View embeddedView =
-          platformViewsAccessibilityDelegate.getPlatformViewById(semanticsNode.platformViewId);
       if (platformViewsAccessibilityDelegate.usesVirtualDisplay(semanticsNode.platformViewId)) {
+        View embeddedView =
+            platformViewsAccessibilityDelegate.getPlatformViewById(semanticsNode.platformViewId);
+        if (embeddedView == null) {
+          return null;
+        }
         Rect bounds = semanticsNode.getGlobalRect();
         return accessibilityViewEmbedder.getRootNode(embeddedView, semanticsNode.id, bounds);
       }
@@ -923,8 +905,8 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
         View embeddedView =
             platformViewsAccessibilityDelegate.getPlatformViewById(child.platformViewId);
 
-        // Add the embedded view as a child of the current accessibility node if it's using
-        // hybrid composition.
+        // Add the embedded view as a child of the current accessibility node if it's not
+        // using a virtual display.
         //
         // In this case, the view is in the Activity's view hierarchy, so it doesn't need to be
         // mirrored.
@@ -1208,7 +1190,23 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
         arguments.getBoolean(AccessibilityNodeInfo.ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN);
     // The voice access expects the semantics node to update immediately. We update the semantics
     // node based on prediction. If the result is incorrect, it will be updated in the next frame.
+    final int previousTextSelectionBase = semanticsNode.textSelectionBase;
+    final int previousTextSelectionExtent = semanticsNode.textSelectionExtent;
     predictCursorMovement(semanticsNode, granularity, forward, extendSelection);
+
+    if (previousTextSelectionBase != semanticsNode.textSelectionBase
+        || previousTextSelectionExtent != semanticsNode.textSelectionExtent) {
+      final String value = semanticsNode.value != null ? semanticsNode.value : "";
+      final AccessibilityEvent selectionEvent =
+          obtainAccessibilityEvent(
+              semanticsNode.id, AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED);
+      selectionEvent.getText().add(value);
+      selectionEvent.setFromIndex(semanticsNode.textSelectionBase);
+      selectionEvent.setToIndex(semanticsNode.textSelectionExtent);
+      selectionEvent.setItemCount(value.length());
+      sendAccessibilityEvent(selectionEvent);
+    }
+
     switch (granularity) {
       case AccessibilityNodeInfo.MOVEMENT_GRANULARITY_CHARACTER:
         {
@@ -1326,9 +1324,10 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       newText = arguments.getString(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE);
     }
     accessibilityChannel.dispatchSemanticsAction(virtualViewId, Action.SET_TEXT, newText);
-    // The voice access expects the semantics node to update immediately. We update the semantics
+    // The voice access expects the semantics node to update immediately. Update the semantics
     // node based on prediction. If the result is incorrect, it will be updated in the next frame.
     node.value = newText;
+    node.valueAttributes = null;
     return true;
   }
 
@@ -1963,9 +1962,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       embeddedAccessibilityFocusedNodeId = null;
     }
 
-    if (semanticsNodeToBeRemoved.platformViewId != -1
-        && !platformViewsAccessibilityDelegate.usesVirtualDisplay(
-            semanticsNodeToBeRemoved.platformViewId)) {
+    if (semanticsNodeToBeRemoved.platformViewId != -1) {
       View embeddedView =
           platformViewsAccessibilityDelegate.getPlatformViewById(
               semanticsNodeToBeRemoved.platformViewId);
@@ -2023,7 +2020,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   }
 
   // Must match SemanticsActions in semantics.dart
-  // https://github.com/flutter/engine/blob/master/lib/ui/semantics.dart
+  // https://github.com/flutter/engine/blob/main/lib/ui/semantics.dart
   public enum Action {
     TAP(1 << 0),
     LONG_PRESS(1 << 1),
@@ -2056,7 +2053,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   }
 
   // Must match SemanticsFlag in semantics.dart
-  // https://github.com/flutter/engine/blob/master/lib/ui/semantics.dart
+  // https://github.com/flutter/engine/blob/main/lib/ui/semantics.dart
   /* Package */ enum Flag {
     HAS_CHECKED_STATE(1 << 0),
     IS_CHECKED(1 << 1),
@@ -2077,8 +2074,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
     HAS_TOGGLED_STATE(1 << 16),
     IS_TOGGLED(1 << 17),
     HAS_IMPLICIT_SCROLLING(1 << 18),
-    // The Dart API defines the following flag but it isn't used in Android.
-    // IS_MULTILINE(1 << 19);
+    IS_MULTILINE(1 << 19),
     IS_READ_ONLY(1 << 20),
     IS_FOCUSABLE(1 << 21),
     IS_LINK(1 << 22),
@@ -2096,7 +2092,11 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   private enum AccessibilityFeature {
     ACCESSIBLE_NAVIGATION(1 << 0),
     INVERT_COLORS(1 << 1), // NOT SUPPORTED
-    DISABLE_ANIMATIONS(1 << 2);
+    DISABLE_ANIMATIONS(1 << 2),
+    BOLD_TEXT(1 << 3), // NOT SUPPORTED
+    REDUCE_MOTION(1 << 4), // NOT SUPPORTED
+    HIGH_CONTRAST(1 << 5), // NOT SUPPORTED
+    ON_OFF_SWITCH_LABELS(1 << 6); // NOT SUPPORTED
 
     final int value;
 
@@ -2166,7 +2166,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   // When adding a new StringAttributeType, the classes in these file must be
   // updated as well.
   //  * engine/src/flutter/lib/ui/semantics.dart
-  //  * engine/src/flutter/lib/web_ui/lib/src/ui/semantics.dart
+  //  * engine/src/flutter/lib/web_ui/lib/semantics.dart
   //  * engine/src/flutter/lib/ui/semantics/string_attribute.h
 
   private enum StringAttributeType {
@@ -2196,7 +2196,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
    * analogous concept within Flutter.
    *
    * <p>To see how this {@code SemanticsNode}'s fields correspond to Flutter's semantics system, see
-   * semantics.dart: https://github.com/flutter/engine/blob/master/lib/ui/semantics.dart
+   * semantics.dart: https://github.com/flutter/engine/blob/main/lib/ui/semantics.dart
    */
   private static class SemanticsNode {
     private static boolean nullableHasAncestor(
@@ -2786,6 +2786,8 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
    * @param eventOrigin the view in the embedded view's hierarchy that sent the event.
    * @return True if the event was sent.
    */
+  // AccessibilityEvent has many irrelevant cases that would be confusing to list.
+  @SuppressLint("SwitchIntDef")
   public boolean externalViewRequestSendAccessibilityEvent(
       View embeddedView, View eventOrigin, AccessibilityEvent event) {
     if (!accessibilityViewEmbedder.requestSendAccessibilityEvent(

@@ -5,6 +5,7 @@
 #ifndef FLUTTER_LIB_UI_PAINTING_CANVAS_H_
 #define FLUTTER_LIB_UI_PAINTING_CANVAS_H_
 
+#include "flutter/display_list/display_list_blend_mode.h"
 #include "flutter/lib/ui/dart_wrapper.h"
 #include "flutter/lib/ui/painting/paint.h"
 #include "flutter/lib/ui/painting/path.h"
@@ -23,7 +24,7 @@ class DartLibraryNatives;
 namespace flutter {
 class CanvasImage;
 
-class Canvas : public RefCountedDartWrappable<Canvas> {
+class Canvas : public RefCountedDartWrappable<Canvas>, DisplayListOpFlags {
   DEFINE_WRAPPERTYPEINFO();
   FML_FRIEND_MAKE_REF_COUNTED(Canvas);
 
@@ -52,6 +53,7 @@ class Canvas : public RefCountedDartWrappable<Canvas> {
   void rotate(double radians);
   void skew(double sx, double sy);
   void transform(const tonic::Float64List& matrix4);
+  void getTransform(tonic::Float64List& matrix4);
 
   void clipRect(double left,
                 double top,
@@ -61,8 +63,10 @@ class Canvas : public RefCountedDartWrappable<Canvas> {
                 bool doAntiAlias = true);
   void clipRRect(const RRect& rrect, bool doAntiAlias = true);
   void clipPath(const CanvasPath* path, bool doAntiAlias = true);
+  void getDestinationClipBounds(tonic::Float64List& rect);
+  void getLocalClipBounds(tonic::Float64List& rect);
 
-  void drawColor(SkColor color, SkBlendMode blend_mode);
+  void drawColor(SkColor color, DlBlendMode blend_mode);
   void drawLine(double x1,
                 double y1,
                 double x2,
@@ -106,36 +110,36 @@ class Canvas : public RefCountedDartWrappable<Canvas> {
   void drawPath(const CanvasPath* path,
                 const Paint& paint,
                 const PaintData& paint_data);
-  void drawImage(const CanvasImage* image,
-                 double x,
-                 double y,
-                 const Paint& paint,
-                 const PaintData& paint_data,
-                 int filterQualityIndex);
-  void drawImageRect(const CanvasImage* image,
-                     double src_left,
-                     double src_top,
-                     double src_right,
-                     double src_bottom,
-                     double dst_left,
-                     double dst_top,
-                     double dst_right,
-                     double dst_bottom,
-                     const Paint& paint,
-                     const PaintData& paint_data,
-                     int filterQualityIndex);
-  void drawImageNine(const CanvasImage* image,
-                     double center_left,
-                     double center_top,
-                     double center_right,
-                     double center_bottom,
-                     double dst_left,
-                     double dst_top,
-                     double dst_right,
-                     double dst_bottom,
-                     const Paint& paint,
-                     const PaintData& paint_data,
-                     int bitmapSamplingIndex);
+  Dart_Handle drawImage(const CanvasImage* image,
+                        double x,
+                        double y,
+                        const Paint& paint,
+                        const PaintData& paint_data,
+                        int filterQualityIndex);
+  Dart_Handle drawImageRect(const CanvasImage* image,
+                            double src_left,
+                            double src_top,
+                            double src_right,
+                            double src_bottom,
+                            double dst_left,
+                            double dst_top,
+                            double dst_right,
+                            double dst_bottom,
+                            const Paint& paint,
+                            const PaintData& paint_data,
+                            int filterQualityIndex);
+  Dart_Handle drawImageNine(const CanvasImage* image,
+                            double center_left,
+                            double center_top,
+                            double center_right,
+                            double center_bottom,
+                            double dst_left,
+                            double dst_top,
+                            double dst_right,
+                            double dst_bottom,
+                            const Paint& paint,
+                            const PaintData& paint_data,
+                            int bitmapSamplingIndex);
   void drawPicture(Picture* picture);
 
   // The paint argument is first for the following functions because Paint
@@ -149,19 +153,19 @@ class Canvas : public RefCountedDartWrappable<Canvas> {
                   const tonic::Float32List& points);
 
   void drawVertices(const Vertices* vertices,
-                    SkBlendMode blend_mode,
+                    DlBlendMode blend_mode,
                     const Paint& paint,
                     const PaintData& paint_data);
 
-  void drawAtlas(const Paint& paint,
-                 const PaintData& paint_data,
-                 int filterQualityIndex,
-                 CanvasImage* atlas,
-                 const tonic::Float32List& transforms,
-                 const tonic::Float32List& rects,
-                 const tonic::Int32List& colors,
-                 SkBlendMode blend_mode,
-                 const tonic::Float32List& cull_rect);
+  Dart_Handle drawAtlas(const Paint& paint,
+                        const PaintData& paint_data,
+                        int filterQualityIndex,
+                        CanvasImage* atlas,
+                        tonic::Float32List& transforms,
+                        tonic::Float32List& rects,
+                        tonic::Int32List& colors,
+                        DlBlendMode blend_mode,
+                        tonic::Float32List& cull_rect);
 
   void drawShadow(const CanvasPath* path,
                   SkColor color,
@@ -188,8 +192,8 @@ class Canvas : public RefCountedDartWrappable<Canvas> {
   // paint attributes from an SkPaint and an operation type as well as access
   // to the raw DisplayListBuilder for emitting custom rendering operations.
   sk_sp<DisplayListCanvasRecorder> display_list_recorder_;
-  sk_sp<DisplayListBuilder> builder() {
-    return display_list_recorder_->builder();
+  DisplayListBuilder* builder() {
+    return display_list_recorder_->builder().get();
   }
 };
 

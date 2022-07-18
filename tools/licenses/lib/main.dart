@@ -52,9 +52,9 @@ abstract class _RepositoryLicensedFile extends _RepositoryFile {
 
   // file names that we are confident won't be included in the final build product
   static final RegExp _readmeNamePattern = RegExp(r'\b_*(?:readme|contributing|patents)_*\b', caseSensitive: false);
-  static final RegExp _buildTimePattern = RegExp(r'^(?!.*gen$)(?:CMakeLists\.txt|(?:pkgdata)?Makefile(?:\.inc)?(?:\.am|\.in|)|configure(?:\.ac|\.in)?|config\.(?:sub|guess)|.+\.m4|install-sh|.+\.sh|.+\.bat|.+\.pyc?|.+\.pl|icu-configure|.+\.gypi?|.*\.gni?|.+\.mk|.+\.cmake|.+\.gradle|.+\.yaml|pubspec\.lock|\.packages|vms_make\.com|pom\.xml|\.project|source\.properties|.+\.obj|.+\.autopkg)$', caseSensitive: false);
+  static final RegExp _buildTimePattern = RegExp(r'^(?!.*gen$)(?:CMakeLists\.txt|(?:pkgdata)?Makefile(?:\.inc)?(?:\.am|\.in|)|configure(?:\.ac|\.in)?|config\.(?:sub|guess)|.+\.m4|install-sh|.+\.sh|.+\.bat|.+\.pyc?|.+\.pl|icu-configure|.+\.gypi?|.*\.gni?|.+\.mk|.+\.cmake|.+\.gradle|.+\.yaml|pubspec\.lock|\.packages|vms_make\.com|pom\.xml|\.project|source\.properties|.+\.obj|.+\.autopkg|Brewfile)$', caseSensitive: false);
   static final RegExp _docsPattern = RegExp(r'^(?:INSTALL|NEWS|OWNERS|AUTHORS|ChangeLog(?:\.rst|\.[0-9]+)?|.+\.txt|.+\.md|.+\.log|.+\.css|.+\.1|doxygen\.config|Doxyfile|.+\.spec(?:\.in)?)$', caseSensitive: false);
-  static final RegExp _devPattern = RegExp(r'^(?:codereview\.settings|.+\.~|.+\.~[0-9]+~|\.clang-format|\.gitattributes|\.landmines|\.DS_Store|\.travis\.yml|\.cirrus\.yml|\.cache)$', caseSensitive: false);
+  static final RegExp _devPattern = RegExp(r'^(?:codereview\.settings|.+\.~|.+\.~[0-9]+~|\.clang-format|swift\.swiftformat|\.gitattributes|\.landmines|\.DS_Store|\.travis\.yml|\.cirrus\.yml|\.cache|\.mailmap)$', caseSensitive: false);
   static final RegExp _testsPattern = RegExp(r'^(?:tj(?:bench|example)test\.(?:java\.)?in|example\.c)$', caseSensitive: false);
   // The ICU library has sample code that will never get linked.
   static final RegExp _icuSamplesPattern = RegExp(r'.*(?:icu\/source\/samples).*$', caseSensitive: false);
@@ -484,41 +484,45 @@ class _RepositoryFreetypeLicenseFile extends _RepositoryLicenseFile {
     : _target = _parseLicense(io), super(parent, io);
 
   static final RegExp _pattern = RegExp(
-    r'The  FreeType 2  font  engine is  copyrighted  work and  cannot be  used\n'
-    r'legally  without a  software license\.   In  order to  make this  project\n'
-    r'usable  to a vast  majority of  developers, we  distribute it  under two\n'
+    r'FREETYPE LICENSES\n'
+    r'-----------------\n'
+    r'\n'
+    r'The FreeType  2 font  engine is  copyrighted work  and cannot  be used\n'
+    r'legally without  a software  license\.  In order  to make  this project\n'
+    r'usable to  a vast majority of  developers, we distribute it  under two\n'
     r'mutually exclusive open-source licenses\.\n'
     r'\n'
-    r'This means  that \*you\* must choose  \*one\* of the  two licenses described\n'
-    r'below, then obey  all its terms and conditions when  using FreeType 2 in\n'
-    r'any of your projects or products.\n'
+    r'This means that \*you\* must choose  \*one\* of the two licenses described\n'
+    r'below, then obey all its terms and conditions when using FreeType 2 in\n'
+    r'any of your projects or products\.\n'
     r'\n'
-    r"  - The FreeType License, found in  the file `(FTL\.TXT)', which is similar\n"
-    r'    to the original BSD license \*with\* an advertising clause that forces\n'
-    r"    you  to  explicitly cite  the  FreeType  project  in your  product's\n"
-    r'    documentation\.  All  details are in the license  file\.  This license\n'
-    r"    is  suited  to products  which  don't  use  the GNU  General  Public\n"
-    r'    License\.\n'
+    r'  - The FreeType License,  found in the file  `docs/(FTL\.TXT)`, which is\n'
+    r'    similar to the  original BSD license \*with\*  an advertising clause\n'
+    r'    that forces  you to explicitly  cite the FreeType project  in your\n'
+    r"    product's  documentation\.  All  details are  in the  license file\.\n"
+    r"    This license is suited to products which don't use the GNU General\n"
+    r'    Public License\.\n'
     r'\n'
-    r'    Note that  this license  is  compatible  to the  GNU General  Public\n'
+    r'    Note that  this license  is compatible to  the GNU  General Public\n'
     r'    License version 3, but not version 2\.\n'
     r'\n'
-    r"  - The GNU General Public License version 2, found in  `GPLv2\.TXT' \(any\n"
-    r'    later version can be used  also\), for programs which already use the\n'
-    r'    GPL\.  Note  that the  FTL is  incompatible  with  GPLv2 due  to  its\n'
-    r'    advertisement clause\.\n'
+    r'  - The   GNU   General   Public   License   version   2,   found   in\n'
+    r'    `docs/GPLv2\.TXT`  \(any  later  version  can  be  used  also\),  for\n'
+    r'    programs  which  already  use  the  GPL\.  Note  that  the  FTL  is\n'
+    r'    incompatible with GPLv2 due to its advertisement clause\.\n'
     r'\n'
-    r'The contributed BDF and PCF drivers  come with a license similar to that\n'
-    r'of the X Window System\.  It is compatible to the above two licenses \(see\n'
-    r'file src/bdf/README and  src/pcf/README\)\.  The same holds  for the files\n'
-    r"`fthash\.c' and  `fthash\.h'; their  code was  part of  the BDF  driver in\n"
-    r'earlier FreeType versions\.\n'
+    r'The contributed  BDF and PCF  drivers come  with a license  similar to\n'
+    r'that  of the  X Window  System\.   It is  compatible to  the above  two\n'
+    r'licenses \(see files `src/bdf/README`  and `src/pcf/README`\)\.  The same\n'
+    r'holds   for   the   source    code   files   `src/base/fthash\.c`   and\n'
+    r'`include/freetype/internal/fthash\.h`; they wer part  of the BDF driver\n'
+    r'in earlier FreeType versions\.\n'
     r'\n'
-    r'The gzip module uses the zlib license \(see src/gzip/zlib\.h\) which too is\n'
-    r'compatible to the above two licenses\.\n'
+    r'The gzip  module uses the  zlib license \(see  `src/gzip/zlib\.h`\) which\n'
+    r'too is compatible to the above two licenses\.\n'
     r'\n'
-    r'The MD5 checksum support \(only used for debugging in development builds\)\n'
-    r'is in the public domain\.\n'
+    r'The  MD5 checksum  support  \(only used  for  debugging in  development\n'
+    r'builds\) is in the public domain\.\n'
     r'\n*'
     r'--- end of LICENSE\.TXT ---\n*$'
   );
@@ -567,16 +571,22 @@ class _RepositoryIcuLicenseFile extends _RepositoryLicenseFile {
   final List<License> _licenses;
 
   static final RegExp _pattern = RegExp(
-    r'^COPYRIGHT AND PERMISSION NOTICE \(ICU 58 and later\)\n+'
-    r'( *Copyright (?:.|\n)+?)\n+' // 1
+    r'^UNICODE, INC\. LICENSE AGREEMENT - DATA FILES AND SOFTWARE\n+'
+    r'( *See Terms of Use (?:.|\n)+?)\n+' // 1
+    r'-+\n'
+    r'\n'
     r'Third-Party Software Licenses\n+'
     r' *This section contains third-party software notices and/or additional\n'
     r' *terms for licensed third-party software components included within ICU\n'
     r' *libraries\.\n+'
-    r' *1\. ICU License - ICU 1.8.1 to ICU 57.1[ \n]+?'
+    r'-+\n'
+    r'\n'
+    r' *ICU License - ICU 1\.8\.1 to ICU 57.1[ \n]+?'
     r' *COPYRIGHT AND PERMISSION NOTICE\n+'
-    r'(Copyright (?:.|\n)+?)\n+' //2
-    r' *2\. Chinese/Japanese Word Break Dictionary Data \(cjdict\.txt\)\n+'
+    r'(Copyright (?:.|\n)+?)\n+' // 2
+    r'-+\n'
+    r'\n'
+    r'Chinese/Japanese Word Break Dictionary Data \(cjdict\.txt\)\n+'
     r' #     The Google Chrome software developed by Google is licensed under\n?'
     r' # the BSD license\. Other software included in this distribution is\n?'
     r' # provided under other licenses, as set forth below\.\n'
@@ -620,26 +630,75 @@ class _RepositoryIcuLicenseFile extends _RepositoryLicenseFile {
     r' #\n'
     r' # +---------------COPYING\.ipadic-----END----------------------------------\n'
     r'\n'
-    r' *3\. Lao Word Break Dictionary Data \(laodict\.txt\)\n'
+    r'-+\n'
+    r'\n'
+    r' *Lao Word Break Dictionary Data \(laodict\.txt\)\n'
     r'\n'
     r'( # +Copyright(?:.|\n)+?)\n' // 8
     r'\n'
-    r' *4\. Burmese Word Break Dictionary Data \(burmesedict\.txt\)\n'
+    r'-+\n'
+    r'\n'
+    r' *Burmese Word Break Dictionary Data \(burmesedict\.txt\)\n'
     r'\n'
     r'( # +Copyright(?:.|\n)+?)\n' // 9
     r'\n'
-    r' *5\. Time Zone Database\n'
+    r'-+\n'
+    r'\n'
+    r' *Time Zone Database\n'
     r'((?:.|\n)+)\n' // 10
     r'\n'
-    r' *6\. Google double-conversion\n'
+    r'-+\n'
     r'\n'
-    r'(Copyright(?:.|\n)+)\n$', // 11
+    r' *Google double-conversion\n'
+    r'\n'
+    r'(Copyright(?:.|\n)+)\n' // 11
+    r'\n'
+    r'-+\n'
+    r'\n'
+    r' *File: aclocal\.m4 \(only for ICU4C\)\n'
+    r' *Section: pkg\.m4 - Macros to locate and utilise pkg-config\.\n+'
+    r'(Copyright (?:.|\n)+?)\n' // 12
+    r'\n'
+    r'-+\n'
+    r'\n'
+    r' *File: config\.guess \(only for ICU4C\)\n+'
+    r'(This file is free software(?:.|\n)+?)\n' // 13
+    r'\n'
+    r'-+\n'
+    r'\n'
+    r' *File: install-sh \(only for ICU4C\)\n+'
+    r'(Copyright(?:.|\n)+?)\n$', // 14
     multiLine: true,
     caseSensitive: false
   );
 
   static final RegExp _unexpectedHash = RegExp(r'^.+ #', multiLine: true);
   static final RegExp _newlineHash = RegExp(r' # ?');
+
+  static const String gplExceptionExplanation1 =
+    'As a special exception to the GNU General Public License, if you\n'
+    'distribute this file as part of a program that contains a\n'
+    'configuration script generated by Autoconf, you may include it under\n'
+    'the same distribution terms that you use for the rest of that\n'
+    'program.\n'
+    '\n'
+    '\n'
+    '(The condition for the exception is fulfilled because\n'
+    'ICU4C includes a configuration script generated by Autoconf,\n'
+    'namely the `configure` script.)';
+
+  static const String gplExceptionExplanation2 =
+    'As a special exception to the GNU General Public License, if you\n'
+    'distribute this file as part of a program that contains a\n'
+    'configuration script generated by Autoconf, you may include it under\n'
+    'the same distribution terms that you use for the rest of that\n'
+    'program.  This Exception is an additional permission under section 7\n'
+    'of the GNU General Public License, version 3 ("GPLv3").\n'
+    '\n'
+    '\n'
+    '(The condition for the exception is fulfilled because\n'
+    'ICU4C includes a configuration script generated by Autoconf,\n'
+    'namely the `configure` script.)';
 
   static String _dewrap(String s) {
     if (!s.startsWith(' # '))
@@ -655,9 +714,12 @@ class _RepositoryIcuLicenseFile extends _RepositoryLicenseFile {
     final Match match = _pattern.firstMatch(io.readString());
     if (match == null)
       throw 'could not parse ICU license file';
-    assert(match.groupCount == 11);
+    assert(match.groupCount == 14);
     if (match.group(10).contains(copyrightMentionPattern) || match.group(11).contains('7.'))
       throw 'unexpected copyright in ICU license file';
+    if (!match.group(12).contains(gplExceptionExplanation1) || !match.group(13).contains(gplExceptionExplanation2)) {
+      throw 'did not find GPL exception in GPL-licensed files';
+    }
     final List<License> result = <License>[
       License.fromBodyAndType(_dewrap(match.group(1)), LicenseType.unknown, origin: io.fullName),
       License.fromBodyAndType(_dewrap(match.group(2)), LicenseType.icu, origin: io.fullName),
@@ -669,6 +731,9 @@ class _RepositoryIcuLicenseFile extends _RepositoryLicenseFile {
       License.fromBodyAndType(_dewrap(match.group(8)), LicenseType.bsd, origin: io.fullName),
       License.fromBodyAndType(_dewrap(match.group(9)), LicenseType.bsd, origin: io.fullName),
       License.fromBodyAndType(_dewrap(match.group(11)), LicenseType.bsd, origin: io.fullName),
+      // Matches 12 and 13 are for the GPL3 license. However, they are covered by an exemption
+      // (they are exempt because ICU4C includes a configuration script generated by Autoconf)
+      License.fromBodyAndType(_dewrap(match.group(14)), LicenseType.mit, origin: io.fullName),
     ];
     return result;
   }
@@ -919,6 +984,8 @@ class _RepositoryDirectory extends _RepositoryEntry implements LicenseSource {
   ///   directory (a.k.a. buildroot).
   bool shouldRecurse(fs.IoNode entry) {
     return !entry.fullName.endsWith('third_party/gn') &&
+            !entry.fullName.endsWith('third_party/gradle') &&
+            !entry.fullName.endsWith('third_party/imgui') &&
             entry.name != '.ccls-cache' &&
             entry.name != '.cipd' &&
             entry.name != '.git' &&
@@ -926,6 +993,8 @@ class _RepositoryDirectory extends _RepositoryEntry implements LicenseSource {
             entry.name != '.gitignore' &&
             entry.name != '.vscode' &&
             entry.name != 'javatests' &&
+            entry.name != 'fixtures' &&
+            entry.name != 'playground' &&
             entry.name != 'test' &&
             entry.name != 'test.disabled' &&
             entry.name != 'test_runner' &&
@@ -1316,7 +1385,8 @@ class _RepositoryAngleDirectory extends _RepositoryDirectory {
 
   @override
   bool shouldRecurse(fs.IoNode entry) {
-    return entry.name != 'tools' // These are build-time tools, and aren't shipped.
+    return entry.name != 'tools'       // These are build-time tools, and aren't shipped.
+        && entry.name != 'third_party' // Unused by Flutter: BUILD files with forwarding targets (but no code).
         && super.shouldRecurse(entry);
   }
 }
@@ -1362,17 +1432,27 @@ class _RepositoryExpatDirectory extends _RepositoryDirectory {
 
   @override
   bool get subdirectoriesAreLicenseRoots => true;
+
+  @override
+  _RepositoryDirectory createSubdirectory(fs.Directory entry) {
+    if (entry.name == 'expat')
+      return _RepositoryExpatExpatDirectory(this, entry);
+    return super.createSubdirectory(entry);
+  }
+}
+
+class _RepositoryExpatExpatDirectory extends _RepositoryDirectory {
+  _RepositoryExpatExpatDirectory(_RepositoryDirectory parent, fs.Directory io) : super(parent, io);
+
+  @override
+  bool shouldRecurse(fs.IoNode entry) {
+    return entry.name != 'doc' // we don't ship the documentation
+        && super.shouldRecurse(entry);
+  }
 }
 
 class _RepositoryFreetypeDocsDirectory extends _RepositoryDirectory {
   _RepositoryFreetypeDocsDirectory(_RepositoryDirectory parent, fs.Directory io) : super(parent, io);
-
-  @override
-  _RepositoryFile createFile(fs.IoNode entry) {
-    if (entry.name == 'LICENSE.TXT')
-      return _RepositoryFreetypeLicenseFile(this, entry as fs.TextFile);
-    return super.createFile(entry);
-  }
 
   @override
   int get fileCount => 0;
@@ -1458,6 +1538,13 @@ class _RepositoryFreetypeDirectory extends _RepositoryDirectory {
   bool shouldRecurse(fs.IoNode entry) {
     return entry.name != 'builds' // build files
         && super.shouldRecurse(entry);
+  }
+
+  @override
+  _RepositoryFile createFile(fs.IoNode entry) {
+    if (entry.name == 'LICENSE.TXT')
+      return _RepositoryFreetypeLicenseFile(this, entry as fs.TextFile);
+    return super.createFile(entry);
   }
 
   @override
@@ -1750,7 +1837,8 @@ class _RepositorySkiaDirectory extends _RepositoryDirectory {
 
   @override
   bool shouldRecurse(fs.IoNode entry) {
-    return entry.name != 'platform_tools' // contains nothing that ends up in the binary executable
+    return entry.name != 'bazel' // contains nothing that ends up in the binary executable
+        && entry.name != 'platform_tools' // contains nothing that ends up in the binary executable
         && entry.name != 'tools' // contains nothing that ends up in the binary executable
         && entry.name != 'resources' // contains nothing that ends up in the binary executable
         && super.shouldRecurse(entry);
@@ -1799,6 +1887,47 @@ class _RepositoryWuffsDirectory extends _RepositoryDirectory {
   }
 }
 
+class _RepositoryVulkanDepsDirectory extends _RepositoryDirectory {
+  _RepositoryVulkanDepsDirectory(_RepositoryDirectory parent, fs.Directory io) : super(parent, io);
+
+  @override
+  bool shouldRecurse(fs.IoNode entry) {
+    return entry.name != '.git' // source control
+        && entry.name != 'glslang' // only used on hosts for tests
+        && entry.name != 'spirv-cross' // Used by impellerc with separate license and host tests. See //flutter/impeller/compiler:impellerc_license
+        && entry.name != 'spirv-headers' // only used on hosts for tests
+        && entry.name != 'spirv-tools' // only used on hosts for tests
+        && entry.name != 'vulkan-loader' // on hosts for tests
+        && entry.name != 'vulkan-tools' // on hosts for tests
+        && entry.name != 'vulkan-validation-layers'; // on hosts for tests
+  }
+
+  @override
+  _RepositoryDirectory createSubdirectory(fs.Directory entry) {
+    if (entry.name == 'vulkan-headers') {
+      return _RepositoryVulkanDepsSubDirectory(this, entry);
+    }
+    return super.createSubdirectory(entry);
+  }
+}
+
+class _RepositoryVulkanDepsSubDirectory extends _RepositoryDirectory {
+  _RepositoryVulkanDepsSubDirectory(_RepositoryDirectory parent, fs.Directory io) : super(parent, io);
+
+  @override
+  bool shouldRecurse(fs.IoNode entry) {
+    return entry.name == 'src';
+  }
+
+  @override
+  _RepositoryDirectory createSubdirectory(fs.Directory entry) {
+    if (entry.name == 'src') {
+      return _RepositoryVulkanDirectory(this, entry);
+    }
+    return super.createSubdirectory(entry);
+  }
+}
+
 class _RepositoryRootThirdPartyDirectory extends _RepositoryGenericThirdPartyDirectory {
   _RepositoryRootThirdPartyDirectory(_RepositoryDirectory parent, fs.Directory io) : super(parent, io);
 
@@ -1817,6 +1946,7 @@ class _RepositoryRootThirdPartyDirectory extends _RepositoryGenericThirdPartyDir
         && entry.name != 'mockito' // only used by tests
         && entry.name != 'pymock' // presumably only used by tests
         && entry.name != 'pyyaml' // build-time dependency only
+        && entry.name != 'yapf'  // only used for code formatting
         && entry.name != 'android_embedding_dependencies' // testing framework for android
         && entry.name != 'yasm' // build-time dependency only
         && entry.name != 'binutils' // build-time dependency only
@@ -1827,13 +1957,10 @@ class _RepositoryRootThirdPartyDirectory extends _RepositoryGenericThirdPartyDir
         && entry.name != 'skia' // treated as a separate component
         && entry.name != 'fontconfig' // not used in standard configurations
         && entry.name != 'swiftshader' // only used on hosts for tests
-        && entry.name != 'shaderc' // only used on hosts for tests
-        && entry.name != 'glslang' // only used on hosts for tests
-        && entry.name != 'spirv_tools' // only used on hosts for tests
-        && entry.name != 'spirv_headers' // only used on hosts for tests
-        && entry.name != 'spirv_cross' // only used on hosts for tests
+        && entry.name != 'shaderc' // Used by impellerc with separate license and host tests. See //flutter/impeller/compiler:impellerc_license
         && entry.name != 'ocmock' // only used for tests
-        && entry.name != 'java'// only used for Android builds
+        && entry.name != 'java' // only used for Android builds
+        && entry.name != 'inja' // Only used by impellerc, which ships a separate license. See //flutter/impeller/compiler:impellerc_license
         && super.shouldRecurse(entry);
   }
 
@@ -1851,6 +1978,10 @@ class _RepositoryRootThirdPartyDirectory extends _RepositoryGenericThirdPartyDir
       return _RepositoryDartDirectory(this, entry);
     if (entry.name == 'expat')
       return _RepositoryExpatDirectory(this, entry);
+    if (entry.name == 'vulkan_memory_allocator')
+      return _RepositoryVulkanMemoryAllocatorDirectory(this, entry);
+    if (entry.name == 'vulkan-deps')
+      return _RepositoryVulkanDepsDirectory(this, entry);
     if (entry.name == 'freetype-android')
       throw '//third_party/freetype-android is no longer part of this client: remove it';
     if (entry.name == 'freetype2')
@@ -1894,6 +2025,17 @@ class _RepositoryThirdPartyWebDependenciesDirectory extends _RepositoryDirectory
   @override
   bool shouldRecurse(fs.IoNode entry) {
     return entry.name != 'canvaskit' // redundant; covered by Skia dependencies
+        && super.shouldRecurse(entry);
+  }
+}
+
+class _RepositoryVulkanMemoryAllocatorDirectory extends _RepositoryDirectory {
+  _RepositoryVulkanMemoryAllocatorDirectory(_RepositoryDirectory parent, fs.Directory io) : super(parent, io);
+
+  @override
+  bool shouldRecurse(fs.IoNode entry) {
+    // Flutter only uses the headers in the include directory.
+    return entry.name == 'include'
         && super.shouldRecurse(entry);
   }
 }
@@ -2150,8 +2292,23 @@ class _RepositoryFlutterDirectory extends _RepositoryDirectory {
       return _createLibDirectoryRoot(entry, this);
     if (entry.name == 'web_sdk')
       return _createWebSdkDirectoryRoot(entry, this);
+    if (entry.name == 'impeller')
+      return _createImpellerDirectory(entry, this);
     return super.createSubdirectory(entry);
   }
+}
+
+_RelativePathDenylistRepositoryDirectory _createImpellerDirectory(fs.Directory entry, _RepositoryDirectory parent) {
+  return _RelativePathDenylistRepositoryDirectory(
+    rootDir: entry,
+    denylist: <Pattern>[
+      // TODO(chinmaygarde): Remove stb.
+      // https://github.com/flutter/flutter/issues/97843
+      'third_party/stb',  // Currently only used for unit tests, and will be removed.
+    ],
+    parent: parent,
+    io: entry,
+  );
 }
 
 /// A specialized crawler for "github.com/flutter/engine/lib" directory.
@@ -2271,7 +2428,11 @@ class _RepositoryFuchsiaSdkLinuxDirectory extends _RepositoryDirectory {
         && entry.name != 'docs'
         && entry.name != 'images'
         && entry.name != 'meta'
-        && entry.name != 'tools';
+        && entry.name != 'tools'
+        // Applies to NOTICE.fuchsia file.
+        // This is a file that covers things that contribute to the Fuchsia SDK.
+        // See: fxb/94240
+        && !(entry.name == 'NOTICE.fuchsia');
   }
 }
 

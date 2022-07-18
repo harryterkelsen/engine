@@ -36,14 +36,52 @@ enum PointerChange {
 
   /// The pointer has stopped making contact with the device.
   up,
+
+  /// A pan/zoom has started on this pointer.
+  ///
+  /// This type of event will always have kind [PointerDeviceKind.trackpad].
+  panZoomStart,
+
+  /// The pan/zoom on this pointer has updated.
+  ///
+  /// This type of event will always have kind [PointerDeviceKind.trackpad].
+  panZoomUpdate,
+
+  /// The pan/zoom on this pointer has ended.
+  ///
+  /// This type of event will always have kind [PointerDeviceKind.trackpad].
+  panZoomEnd,
 }
 
 /// The kind of pointer device.
 enum PointerDeviceKind {
   /// A touch-based pointer device.
+  ///
+  /// The most common case is a touch screen.
+  ///
+  /// When the user is operating with a trackpad on iOS, clicking will also
+  /// dispatch events with kind [touch] if
+  /// `UIApplicationSupportsIndirectInputEvents` is not present in `Info.plist`
+  /// or returns NO.
+  ///
+  /// See also:
+  ///
+  ///  * [UIApplicationSupportsIndirectInputEvents](https://developer.apple.com/documentation/bundleresources/information_property_list/uiapplicationsupportsindirectinputevents?language=objc).
   touch,
 
   /// A mouse-based pointer device.
+  ///
+  /// The most common case is a mouse on the desktop or Web.
+  ///
+  /// When the user is operating with a trackpad on iOS, moving the pointing
+  /// cursor will also dispatch events with kind [mouse], and clicking will
+  /// dispatch events with kind [mouse] if
+  /// `UIApplicationSupportsIndirectInputEvents` is not present in `Info.plist`
+  /// or returns NO.
+  ///
+  /// See also:
+  ///
+  ///  * [UIApplicationSupportsIndirectInputEvents](https://developer.apple.com/documentation/bundleresources/information_property_list/uiapplicationsupportsindirectinputevents?language=objc).
   mouse,
 
   /// A pointer device with a stylus.
@@ -51,6 +89,33 @@ enum PointerDeviceKind {
 
   /// A pointer device with a stylus that has been inverted.
   invertedStylus,
+
+  /// Gestures from a trackpad.
+  ///
+  /// A trackpad here is defined as a touch-based pointer device with an
+  /// indirect surface (the user operates the screen by touching something that
+  /// is not the screen).
+  ///
+  /// When the user makes zoom, pan, scroll or rotate gestures with a physical
+  /// trackpad, supporting platforms dispatch events with kind [trackpad].
+  ///
+  /// Events with kind [trackpad] can only have a [PointerChange] of `add`,
+  /// `remove`, and pan-zoom related values.
+  ///
+  /// Some platforms don't support (or don't fully support) trackpad
+  /// gestures, and might convert trackpad gestures into fake pointer events
+  /// that simulate dragging. These events typically have kind [touch] or
+  /// [mouse] instead of [trackpad]. This includes (but is not limited to) Web,
+  /// and iOS when `UIApplicationSupportsIndirectInputEvents` isn't present in
+  /// `Info.plist` or returns NO.
+  ///
+  /// Moving the pointing cursor or clicking with a trackpad typically triggers
+  /// [touch] or [mouse] events, but never triggers [trackpad] events.
+  ///
+  /// See also:
+  ///
+  ///  * [UIApplicationSupportsIndirectInputEvents](https://developer.apple.com/documentation/bundleresources/information_property_list/uiapplicationsupportsindirectinputevents?language=objc).
+  trackpad,
 
   /// An unknown pointer device.
   unknown
@@ -63,6 +128,9 @@ enum PointerSignalKind {
 
   /// A pointer-generated scroll (e.g., mouse wheel or trackpad scroll).
   scroll,
+
+  /// A pointer-generated scroll-inertia cancel.
+  scrollInertiaCancel,
 
   /// An unknown pointer signal kind.
   unknown
@@ -101,6 +169,12 @@ class PointerData {
     this.platformData = 0,
     this.scrollDeltaX = 0.0,
     this.scrollDeltaY = 0.0,
+    this.panX = 0.0,
+    this.panY = 0.0,
+    this.panDeltaX = 0.0,
+    this.panDeltaY = 0.0,
+    this.scale = 0.0,
+    this.rotation = 0.0,
   });
 
   /// Unique identifier that ties the [PointerEvent] to embedder event created it.
@@ -265,6 +339,40 @@ class PointerData {
   /// The amount to scroll in the y direction, in physical pixels.
   final double scrollDeltaY;
 
+  /// For events with change of PointerChange.panZoomUpdate:
+  ///
+  /// The current panning magnitude of the pan/zoom in the x direction, in
+  /// physical pixels.
+  final double panX;
+
+  /// For events with change of PointerChange.panZoomUpdate:
+  ///
+  /// The current panning magnitude of the pan/zoom in the y direction, in
+  /// physical pixels.
+  final double panY;
+
+  /// For events with change of PointerChange.panZoomUpdate:
+  ///
+  /// The difference in panning of the pan/zoom in the x direction since the
+  /// latest panZoomUpdate event, in physical pixels.
+  final double panDeltaX;
+
+  /// For events with change of PointerChange.panZoomUpdate:
+  ///
+  /// The difference in panning of the pan/zoom in the y direction since the
+  /// last panZoomUpdate event, in physical pixels.
+  final double panDeltaY;
+
+  /// For events with change of PointerChange.panZoomUpdate:
+  ///
+  /// The current scale of the pan/zoom (unitless), with 1.0 as the initial scale.
+  final double scale;
+
+  /// For events with change of PointerChange.panZoomUpdate:
+  ///
+  /// The current angle of the pan/zoom in radians, with 0.0 as the initial angle.
+  final double rotation;
+
   @override
   String toString() => 'PointerData(x: $physicalX, y: $physicalY)';
 
@@ -298,7 +406,13 @@ class PointerData {
              'tilt: $tilt, '
              'platformData: $platformData, '
              'scrollDeltaX: $scrollDeltaX, '
-             'scrollDeltaY: $scrollDeltaY'
+             'scrollDeltaY: $scrollDeltaY, '
+             'panX: $panX, '
+             'panY: $panY, '
+             'panDeltaX: $panDeltaX, '
+             'panDeltaY: $panDeltaY, '
+             'scale: $scale, '
+             'rotation: $rotation'
            ')';
   }
 }

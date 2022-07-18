@@ -6,6 +6,7 @@
 
 #include <gtk/gtk.h>
 
+#include "flutter/shell/platform/common/text_editing_delta.h"
 #include "flutter/shell/platform/common/text_input_model.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_json_method_codec.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_method_channel.h"
@@ -21,6 +22,8 @@ static constexpr char kClearClientMethod[] = "TextInput.clearClient";
 static constexpr char kHideMethod[] = "TextInput.hide";
 static constexpr char kUpdateEditingStateMethod[] =
     "TextInputClient.updateEditingState";
+static constexpr char kUpdateEditingStateWithDeltasMethod[] =
+    "TextInputClient.updateEditingStateWithDeltas";
 static constexpr char kPerformActionMethod[] = "TextInputClient.performAction";
 static constexpr char kSetEditableSizeAndTransform[] =
     "TextInput.setEditableSizeAndTransform";
@@ -28,6 +31,7 @@ static constexpr char kSetMarkedTextRect[] = "TextInput.setMarkedTextRect";
 
 static constexpr char kInputActionKey[] = "inputAction";
 static constexpr char kTextInputTypeKey[] = "inputType";
+static constexpr char kEnableDeltaModel[] = "enableDeltaModel";
 static constexpr char kTextInputTypeNameKey[] = "name";
 static constexpr char kTextKey[] = "text";
 static constexpr char kSelectionBaseKey[] = "selectionBase";
@@ -46,11 +50,11 @@ static constexpr char kNoneInputType[] = "TextInputType.none";
 static constexpr int64_t kClientIdUnset = -1;
 
 typedef enum {
-  FL_TEXT_INPUT_TYPE_TEXT,
+  kFlTextInputTypeText,
   // Send newline when multi-line and enter is pressed.
-  FL_TEXT_INPUT_TYPE_MULTILINE,
+  kFlTextInputTypeMultiline,
   // The input method is not shown at all.
-  FL_TEXT_INPUT_TYPE_NONE,
+  kFlTextInputTypeNone,
 } FlTextInputType;
 
 struct FlTextInputPluginPrivate {
@@ -67,16 +71,16 @@ struct FlTextInputPluginPrivate {
   // The type of the input method.
   FlTextInputType input_type;
 
+  // Whether to enable that the engine sends text input updates to the framework
+  // as TextEditingDeltas or as one TextEditingValue.
+  // For more information on the delta model, see:
+  // https://master-api.flutter.dev/flutter/services/TextInputConfiguration/enableDeltaModel.html
+  gboolean enable_delta_model;
+
   // Input method.
   GtkIMContext* im_context;
 
-  // IM filter.
-  FlTextInputPluginImFilter im_filter;
-
   flutter::TextInputModel* text_model;
-
-  // The owning Flutter view.
-  FlView* view;
 
   // A 4x4 matrix that maps from `EditableText` local coordinates to the
   // coordinate system of `PipelineOwner.rootNode`.
@@ -134,12 +138,12 @@ static void update_editing_state(FlTextInputPlugin* self) {
   fl_value_set_string_take(value, kSelectionExtentKey,
                            fl_value_new_int(selection.extent()));
 
-  int composing_base = priv->text_model->composing()
-                           ? priv->text_model->composing_range().base()
-                           : -1;
-  int composing_extent = priv->text_model->composing()
-                             ? priv->text_model->composing_range().extent()
-                             : -1;
+  int composing_base = -1;
+  int composing_extent = -1;
+  if (!priv->text_model->composing_range().collapsed()) {
+    composing_base = priv->text_model->composing_range().base();
+    composing_extent = priv->text_model->composing_range().extent();
+  }
   fl_value_set_string_take(value, kComposingBaseKey,
                            fl_value_new_int(composing_base));
   fl_value_set_string_take(value, kComposingExtentKey,
@@ -156,6 +160,64 @@ static void update_editing_state(FlTextInputPlugin* self) {
   fl_method_channel_invoke_method(priv->channel, kUpdateEditingStateMethod,
                                   args, nullptr,
                                   update_editing_state_response_cb, self);
+}
+
+// Informs Flutter of text input changes by passing just the delta.
+static void update_editing_state_with_delta(FlTextInputPlugin* self,
+                                            flutter::TextEditingDelta* delta) {
+  FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
+      fl_text_input_plugin_get_instance_private(self));
+
+  g_autoptr(FlValue) args = fl_value_new_list();
+  fl_value_append_take(args, fl_value_new_int(priv->client_id));
+
+  g_autoptr(FlValue) deltaValue = fl_value_new_map();
+  fl_value_set_string_take(deltaValue, "oldText",
+                           fl_value_new_string(delta->old_text().c_str()));
+
+  fl_value_set_string_take(deltaValue, "deltaText",
+                           fl_value_new_string(delta->delta_text().c_str()));
+
+  fl_value_set_string_take(deltaValue, "deltaStart",
+                           fl_value_new_int(delta->delta_start()));
+
+  fl_value_set_string_take(deltaValue, "deltaEnd",
+                           fl_value_new_int(delta->delta_end()));
+
+  flutter::TextRange selection = priv->text_model->selection();
+  fl_value_set_string_take(deltaValue, "selectionBase",
+                           fl_value_new_int(selection.base()));
+
+  fl_value_set_string_take(deltaValue, "selectionExtent",
+                           fl_value_new_int(selection.extent()));
+
+  fl_value_set_string_take(deltaValue, "selectionAffinity",
+                           fl_value_new_string(kTextAffinityDownstream));
+
+  fl_value_set_string_take(deltaValue, "selectionIsDirectional",
+                           fl_value_new_bool(FALSE));
+
+  int composing_base = -1;
+  int composing_extent = -1;
+  if (!priv->text_model->composing_range().collapsed()) {
+    composing_base = priv->text_model->composing_range().base();
+    composing_extent = priv->text_model->composing_range().extent();
+  }
+  fl_value_set_string_take(deltaValue, "composingBase",
+                           fl_value_new_int(composing_base));
+  fl_value_set_string_take(deltaValue, "composingExtent",
+                           fl_value_new_int(composing_extent));
+
+  g_autoptr(FlValue) deltas = fl_value_new_list();
+  fl_value_append(deltas, deltaValue);
+  g_autoptr(FlValue) value = fl_value_new_map();
+  fl_value_set_string(value, "deltas", deltas);
+
+  fl_value_append(args, value);
+
+  fl_method_channel_invoke_method(
+      priv->channel, kUpdateEditingStateWithDeltasMethod, args, nullptr,
+      update_editing_state_response_cb, self);
 }
 
 // Called when a response is received from TextInputClient.performAction()
@@ -190,38 +252,54 @@ static void im_preedit_start_cb(FlTextInputPlugin* self) {
   FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
       fl_text_input_plugin_get_instance_private(self));
   priv->text_model->BeginComposing();
-
-  // Set the top-level window used for system input method windows.
-  GdkWindow* window =
-      gtk_widget_get_window(gtk_widget_get_toplevel(GTK_WIDGET(priv->view)));
-  gtk_im_context_set_client_window(priv->im_context, window);
 }
 
 // Signal handler for GtkIMContext::preedit-changed
 static void im_preedit_changed_cb(FlTextInputPlugin* self) {
   FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
       fl_text_input_plugin_get_instance_private(self));
+  std::string text_before_change = priv->text_model->GetText();
   g_autofree gchar* buf = nullptr;
   gint cursor_offset = 0;
   gtk_im_context_get_preedit_string(priv->im_context, &buf, nullptr,
                                     &cursor_offset);
-  cursor_offset += priv->text_model->composing_range().base();
+  if (priv->text_model->composing()) {
+    cursor_offset += priv->text_model->composing_range().start();
+  } else {
+    cursor_offset += priv->text_model->selection().start();
+  }
   priv->text_model->UpdateComposingText(buf);
-  priv->text_model->SetSelection(
-      flutter::TextRange(cursor_offset, cursor_offset));
+  priv->text_model->SetSelection(flutter::TextRange(cursor_offset));
 
-  update_editing_state(self);
+  if (priv->enable_delta_model) {
+    std::string text(buf);
+    flutter::TextEditingDelta delta = flutter::TextEditingDelta(
+        text_before_change, priv->text_model->composing_range(), text);
+    update_editing_state_with_delta(self, &delta);
+  } else {
+    update_editing_state(self);
+  }
 }
 
 // Signal handler for GtkIMContext::commit
 static void im_commit_cb(FlTextInputPlugin* self, const gchar* text) {
   FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
       fl_text_input_plugin_get_instance_private(self));
+  std::string text_before_change = priv->text_model->GetText();
+  flutter::TextRange selection_before_change = priv->text_model->selection();
+
   priv->text_model->AddText(text);
   if (priv->text_model->composing()) {
     priv->text_model->CommitComposing();
   }
-  update_editing_state(self);
+
+  if (priv->enable_delta_model) {
+    flutter::TextEditingDelta delta = flutter::TextEditingDelta(
+        text_before_change, selection_before_change, text);
+    update_editing_state_with_delta(self, &delta);
+  } else {
+    update_editing_state(self);
+  }
 }
 
 // Signal handler for GtkIMContext::preedit-end
@@ -229,7 +307,13 @@ static void im_preedit_end_cb(FlTextInputPlugin* self) {
   FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
       fl_text_input_plugin_get_instance_private(self));
   priv->text_model->EndComposing();
-  update_editing_state(self);
+  if (priv->enable_delta_model) {
+    flutter::TextEditingDelta delta = flutter::TextEditingDelta(
+        "", flutter::TextRange(-1, -1), priv->text_model->GetText());
+    update_editing_state_with_delta(self, &delta);
+  } else {
+    update_editing_state(self);
+  }
 }
 
 // Signal handler for GtkIMContext::retrieve-surrounding
@@ -249,8 +333,17 @@ static gboolean im_delete_surrounding_cb(FlTextInputPlugin* self,
                                          gint n_chars) {
   FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
       fl_text_input_plugin_get_instance_private(self));
+
+  std::string text_before_change = priv->text_model->GetText();
   if (priv->text_model->DeleteSurrounding(offset, n_chars)) {
-    update_editing_state(self);
+    if (priv->enable_delta_model) {
+      flutter::TextEditingDelta delta = flutter::TextEditingDelta(
+          text_before_change, priv->text_model->composing_range(),
+          priv->text_model->GetText());
+      update_editing_state_with_delta(self, &delta);
+    } else {
+      update_editing_state(self);
+    }
   }
   return TRUE;
 }
@@ -274,8 +367,13 @@ static FlMethodResponse* set_client(FlTextInputPlugin* self, FlValue* args) {
     priv->input_action = g_strdup(fl_value_get_string(input_action_value));
   }
 
+  FlValue* enable_delta_model_value =
+      fl_value_lookup_string(config_value, kEnableDeltaModel);
+  gboolean enable_delta_model = fl_value_get_bool(enable_delta_model_value);
+  priv->enable_delta_model = enable_delta_model;
+
   // Reset the input type, then set only if appropriate.
-  priv->input_type = FL_TEXT_INPUT_TYPE_TEXT;
+  priv->input_type = kFlTextInputTypeText;
   FlValue* input_type_value =
       fl_value_lookup_string(config_value, kTextInputTypeKey);
   if (fl_value_get_type(input_type_value) == FL_VALUE_TYPE_MAP) {
@@ -284,9 +382,9 @@ static FlMethodResponse* set_client(FlTextInputPlugin* self, FlValue* args) {
     if (fl_value_get_type(input_type_name) == FL_VALUE_TYPE_STRING) {
       const gchar* input_type = fl_value_get_string(input_type_name);
       if (g_strcmp0(input_type, kMultilineInputType) == 0) {
-        priv->input_type = FL_TEXT_INPUT_TYPE_MULTILINE;
+        priv->input_type = kFlTextInputTypeMultiline;
       } else if (g_strcmp0(input_type, kNoneInputType) == 0) {
-        priv->input_type = FL_TEXT_INPUT_TYPE_NONE;
+        priv->input_type = kFlTextInputTypeNone;
       }
     }
   }
@@ -307,14 +405,9 @@ static FlMethodResponse* hide(FlTextInputPlugin* self) {
 static FlMethodResponse* show(FlTextInputPlugin* self) {
   FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
       fl_text_input_plugin_get_instance_private(self));
-  if (priv->input_type == FL_TEXT_INPUT_TYPE_NONE) {
+  if (priv->input_type == kFlTextInputTypeNone) {
     return hide(self);
   }
-
-  // Set the top-level window used for system input method windows.
-  GdkWindow* window =
-      gtk_widget_get_window(gtk_widget_get_toplevel(GTK_WIDGET(priv->view)));
-  gtk_im_context_set_client_window(priv->im_context, window);
 
   gtk_im_context_focus_in(priv->im_context);
 
@@ -374,7 +467,7 @@ static FlMethodResponse* clear_client(FlTextInputPlugin* self) {
 // over the text input channel: updates to the composing rect (cursor rect when
 // not in IME composing mode) and updates to the matrix transform from local
 // coordinates to Flutter root coordinates. This function is called after each
-// of these updates. It transforms the composing rect to GTK window coordinates
+// of these updates. It transforms the composing rect to GDK window coordinates
 // and notifies GTK of the updated cursor position.
 static void update_im_cursor_position(FlTextInputPlugin* self) {
   FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
@@ -394,14 +487,9 @@ static void update_im_cursor_position(FlTextInputPlugin* self) {
            priv->composing_rect.y * priv->editabletext_transform[1][1] +
            priv->editabletext_transform[3][1] + priv->composing_rect.height;
 
-  // Transform from Flutter view coordinates to GTK window coordinates.
-  GdkRectangle preedit_rect;
-  gtk_widget_translate_coordinates(
-      GTK_WIDGET(priv->view), gtk_widget_get_toplevel(GTK_WIDGET(priv->view)),
-      x, y, &preedit_rect.x, &preedit_rect.y);
-
   // Set the cursor location in window coordinates so that GTK can position any
   // system input method windows.
+  GdkRectangle preedit_rect = {x, y, 0, 0};
   gtk_im_context_set_cursor_location(priv->im_context, &preedit_rect);
 }
 
@@ -499,7 +587,6 @@ static void fl_text_input_plugin_dispose(GObject* object) {
     delete priv->text_model;
     priv->text_model = nullptr;
   }
-  priv->view = nullptr;
 
   G_OBJECT_CLASS(fl_text_input_plugin_parent_class)->dispose(object);
 }
@@ -517,9 +604,14 @@ static gboolean fl_text_input_plugin_filter_keypress_default(
     return FALSE;
   }
 
-  if (priv->im_filter(priv->im_context, event->origin)) {
+  GdkEventKey* key_event = reinterpret_cast<GdkEventKey*>(event->origin);
+  if (gtk_im_context_filter_keypress(priv->im_context, key_event)) {
     return TRUE;
   }
+
+  std::string text_before_change = priv->text_model->GetText();
+  flutter::TextRange selection_before_change = priv->text_model->selection();
+  std::string text = priv->text_model->GetText();
 
   // Handle the enter/return key.
   gboolean do_action = FALSE;
@@ -538,8 +630,9 @@ static gboolean fl_text_input_plugin_filter_keypress_default(
       case GDK_KEY_Return:
       case GDK_KEY_KP_Enter:
       case GDK_KEY_ISO_Enter:
-        if (priv->input_type == FL_TEXT_INPUT_TYPE_MULTILINE) {
+        if (priv->input_type == kFlTextInputTypeMultiline) {
           priv->text_model->AddCodePoint('\n');
+          text = "\n";
           changed = TRUE;
         }
         do_action = TRUE;
@@ -565,7 +658,13 @@ static gboolean fl_text_input_plugin_filter_keypress_default(
   }
 
   if (changed) {
-    update_editing_state(self);
+    if (priv->enable_delta_model) {
+      flutter::TextEditingDelta delta = flutter::TextEditingDelta(
+          text_before_change, selection_before_change, text);
+      update_editing_state_with_delta(self, &delta);
+    } else {
+      update_editing_state(self);
+    }
   }
   if (do_action) {
     perform_action(self);
@@ -587,8 +686,20 @@ static void fl_text_input_plugin_init(FlTextInputPlugin* self) {
       fl_text_input_plugin_get_instance_private(self));
 
   priv->client_id = kClientIdUnset;
-  priv->im_context = gtk_im_multicontext_new();
-  priv->input_type = FL_TEXT_INPUT_TYPE_TEXT;
+  priv->input_type = kFlTextInputTypeText;
+  priv->text_model = new flutter::TextInputModel();
+}
+
+static void init_im_context(FlTextInputPlugin* self, GtkIMContext* im_context) {
+  FlTextInputPluginPrivate* priv = static_cast<FlTextInputPluginPrivate*>(
+      fl_text_input_plugin_get_instance_private(self));
+  priv->im_context = GTK_IM_CONTEXT(g_object_ref(im_context));
+
+  // On Wayland, this call sets up the input method so it can be enabled
+  // immediately when required. Without it, on-screen keyboard's don't come up
+  // the first time a text field is focused.
+  gtk_im_context_focus_out(priv->im_context);
+
   g_signal_connect_object(priv->im_context, "preedit-start",
                           G_CALLBACK(im_preedit_start_cb), self,
                           G_CONNECT_SWAPPED);
@@ -606,15 +717,12 @@ static void fl_text_input_plugin_init(FlTextInputPlugin* self) {
   g_signal_connect_object(priv->im_context, "delete-surrounding",
                           G_CALLBACK(im_delete_surrounding_cb), self,
                           G_CONNECT_SWAPPED);
-  priv->text_model = new flutter::TextInputModel();
 }
 
-FlTextInputPlugin* fl_text_input_plugin_new(
-    FlBinaryMessenger* messenger,
-    FlView* view,
-    FlTextInputPluginImFilter im_filter) {
+FlTextInputPlugin* fl_text_input_plugin_new(FlBinaryMessenger* messenger,
+                                            GtkIMContext* im_context) {
   g_return_val_if_fail(FL_IS_BINARY_MESSENGER(messenger), nullptr);
-  g_return_val_if_fail(im_filter != nullptr, nullptr);
+  g_return_val_if_fail(GTK_IS_IM_CONTEXT(im_context), nullptr);
 
   FlTextInputPlugin* self = FL_TEXT_INPUT_PLUGIN(
       g_object_new(fl_text_input_plugin_get_type(), nullptr));
@@ -626,8 +734,8 @@ FlTextInputPlugin* fl_text_input_plugin_new(
       fl_method_channel_new(messenger, kChannelName, FL_METHOD_CODEC(codec));
   fl_method_channel_set_method_call_handler(priv->channel, method_call_cb, self,
                                             nullptr);
-  priv->view = view;
-  priv->im_filter = im_filter;
+
+  init_im_context(self, im_context);
 
   return self;
 }

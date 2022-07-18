@@ -4,19 +4,21 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html;
-import 'dart:js_util' as js_util;
 import 'dart:typed_data';
 
 import '../assets.dart';
 import '../browser_detection.dart';
+import '../dom.dart';
+import '../safe_browser_api.dart';
 import '../util.dart';
 import 'layout_service.dart';
 
 const String ahemFontFamily = 'Ahem';
-const String ahemFontUrl = 'packages/ui/assets/ahem.ttf';
+const String ahemFontUrl = '/assets/fonts/ahem.ttf';
 const String robotoFontFamily = 'Roboto';
-const String robotoTestFontUrl = 'packages/ui/assets/Roboto-Regular.ttf';
+const String robotoTestFontUrl = '/assets/fonts/Roboto-Regular.ttf';
+const String robotoVariableFontFamily = 'RobotoVariable';
+const String robotoVariableTestFontUrl = '/assets/fonts/RobotoSlab-VariableFont_wght.ttf';
 
 /// This class is responsible for registering and loading fonts.
 ///
@@ -87,6 +89,8 @@ class FontCollection {
         ahemFontFamily, 'url($ahemFontUrl)', const <String, String>{});
     _testFontManager!.registerAsset(robotoFontFamily,
         'url($robotoTestFontUrl)', const <String, String>{});
+    _testFontManager!.registerAsset(robotoVariableFontFamily,
+        'url($robotoVariableTestFontUrl)', const <String, String>{});
   }
 
   /// Returns a [Future] that completes when the registered fonts are loaded
@@ -101,7 +105,7 @@ class FontCollection {
     _assetFontManager = null;
     _testFontManager = null;
     if (supportsFontsClearApi) {
-      html.document.fonts!.clear();
+      domDocument.fonts!.clear();
     }
   }
 }
@@ -135,27 +139,27 @@ class FontManager {
   /// Browsers and browsers versions differ significantly on how a valid font
   /// family name should be formatted. Notable issues are:
   ///
-  /// Safari 12 and Firefox crash if you create a [html.FontFace] with a font
+  /// Safari 12 and Firefox crash if you create a [DomFontFace] with a font
   /// family that is not correct CSS syntax. Font family names with invalid
   /// characters are accepted accepted on these browsers, when wrapped it in
   /// quotes.
   ///
-  /// Additionally, for Safari 12 to work [html.FontFace] name should be
+  /// Additionally, for Safari 12 to work [DomFontFace] name should be
   /// loaded correctly on the first try.
   ///
   /// A font in Chrome is not usable other than inside a '<p>' tag, if a
-  /// [html.FontFace] is loaded wrapped with quotes. Unlike Safari 12 if a
+  /// [DomFontFace] is loaded wrapped with quotes. Unlike Safari 12 if a
   /// valid version of the font is also loaded afterwards it will show
   /// that font normally.
   ///
-  /// In Safari 13 the [html.FontFace] should be loaded with unquoted family
+  /// In Safari 13 the [DomFontFace] should be loaded with unquoted family
   /// names.
   ///
   /// In order to avoid all these browser compatibility issues this method:
   /// * Detects the family names that might cause a conflict.
   /// * Loads it with the quotes.
   /// * Loads it again without the quotes.
-  /// * For all the other family names [html.FontFace] is loaded only once.
+  /// * For all the other family names [DomFontFace] is loaded only once.
   ///
   /// See also:
   ///
@@ -183,19 +187,9 @@ class FontManager {
   ) {
     // try/catch because `new FontFace` can crash with an improper font family.
     try {
-      final html.FontFace fontFace = html.FontFace(family, asset, descriptors);
+      final DomFontFace fontFace = createDomFontFace(family, asset, descriptors);
       _fontLoadingFutures.add(fontFace.load().then((_) {
-        // We could do:
-        // ```
-        // html.document.fonts!.add(fontFace);
-        // ```
-        // But dart:html expects the return value to be non-null, and Firefox
-        // returns null. This causes the app to crash in Firefox with a null
-        // check exception.
-        //
-        // TODO(mdebbar): Revert this once the dart:html type is fixed.
-        //                https://github.com/dart-lang/sdk/issues/45676
-        js_util.callMethod(html.document.fonts!, 'add', <dynamic>[fontFace]);
+        domDocument.fonts!.add(fontFace);
       }, onError: (dynamic e) {
         printWarning('Error while trying to load font family "$family":\n$e');
       }));
@@ -208,15 +202,15 @@ class FontManager {
   Future<void> _loadFontFaceBytes(String family, Uint8List list) {
     // Since these fonts are loaded by user code, surface the error
     // through the returned future.
-    final html.FontFace fontFace = html.FontFace(family, list);
+    final DomFontFace fontFace = createDomFontFace(family, list);
     return fontFace.load().then((_) {
-      html.document.fonts!.add(fontFace);
+      domDocument.fonts!.add(fontFace);
       // There might be paragraph measurements for this new font before it is
       // loaded. They were measured using fallback font, so we should clear the
       // cache.
       Spanometer.clearRulersCache();
     }, onError: (dynamic exception) {
-      // Failures here will throw an html.DomException which confusingly
+      // Failures here will throw an DomException which confusingly
       // does not implement Exception or Error. Rethrow an Exception so it can
       // be caught in user code without depending on dart:html or requiring a
       // catch block without "on".
@@ -251,7 +245,7 @@ class _PolyfillFontManager extends FontManager {
     String asset,
     Map<String, String> descriptors,
   ) {
-    final html.ParagraphElement paragraph = html.ParagraphElement();
+    final DomHTMLParagraphElement paragraph = createDomHTMLParagraphElement();
     paragraph.style.position = 'absolute';
     paragraph.style.visibility = 'hidden';
     paragraph.style.fontSize = '72px';
@@ -259,14 +253,14 @@ class _PolyfillFontManager extends FontManager {
         browserEngine == BrowserEngine.ie11 ? 'Times New Roman' : 'sans-serif';
     paragraph.style.fontFamily = fallbackFontName;
     if (descriptors['style'] != null) {
-      paragraph.style.fontStyle = descriptors['style'];
+      paragraph.style.fontStyle = descriptors['style']!;
     }
     if (descriptors['weight'] != null) {
-      paragraph.style.fontWeight = descriptors['weight'];
+      paragraph.style.fontWeight = descriptors['weight']!;
     }
     paragraph.text = _testString;
 
-    html.document.body!.append(paragraph);
+    domDocument.body!.append(paragraph);
     final int sansSerifWidth = paragraph.offsetWidth;
 
     paragraph.style.fontFamily = "'$family', $fallbackFontName";
@@ -303,10 +297,10 @@ class _PolyfillFontManager extends FontManager {
     final String fontFaceDeclaration = fontStyleMap.keys
         .map((String name) => '$name: ${fontStyleMap[name]};')
         .join(' ');
-    final html.StyleElement fontLoadStyle = html.StyleElement();
+    final DomHTMLStyleElement fontLoadStyle = DomHTMLStyleElement();
     fontLoadStyle.type = 'text/css';
     fontLoadStyle.innerHtml = '@font-face { $fontFaceDeclaration }';
-    html.document.head!.append(fontLoadStyle);
+    domDocument.head!.append(fontLoadStyle);
 
     // HACK: If this is an icon font, then when it loads it won't change the
     // width of our test string. So we just have to hope it loads before the
@@ -322,9 +316,3 @@ class _PolyfillFontManager extends FontManager {
     _fontLoadingFutures.add(completer.future);
   }
 }
-
-final bool supportsFontLoadingApi =
-    js_util.hasProperty(html.window, 'FontFace');
-final bool supportsFontsClearApi =
-    js_util.hasProperty(html.document, 'fonts') &&
-        js_util.hasProperty(html.document.fonts!, 'clear');

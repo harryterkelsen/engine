@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
 import 'dart:math' as math;
 
 import 'package:meta/meta.dart';
 import 'package:ui/ui.dart' as ui;
 
+import '../dom.dart';
 import 'canvas_paragraph.dart';
 import 'line_breaker.dart';
 import 'measurement.dart';
@@ -17,13 +17,13 @@ import 'text_direction.dart';
 
 /// Performs layout on a [CanvasParagraph].
 ///
-/// It uses a [html.CanvasElement] to measure text.
+/// It uses a [DomCanvasElement] to measure text.
 class TextLayoutService {
   TextLayoutService(this.paragraph);
 
   final CanvasParagraph paragraph;
 
-  final html.CanvasRenderingContext2D context = html.CanvasElement().context2D;
+  final DomCanvasRenderingContext2D context = createDomCanvasElement().context2D;
 
   // *** Results of layout *** //
 
@@ -33,7 +33,7 @@ class TextLayoutService {
 
   double height = 0.0;
 
-  EngineLineMetrics? longestLine;
+  ParagraphLine? longestLine;
 
   double minIntrinsicWidth = 0.0;
 
@@ -45,7 +45,11 @@ class TextLayoutService {
 
   bool didExceedMaxLines = false;
 
-  final List<EngineLineMetrics> lines = <EngineLineMetrics>[];
+  final List<ParagraphLine> lines = <ParagraphLine>[];
+
+  /// The bounds that contain the text painted inside this paragraph.
+  ui.Rect get paintBounds => _paintBounds;
+  ui.Rect _paintBounds = ui.Rect.zero;
 
   // *** Convenient shortcuts used during layout *** //
 
@@ -61,7 +65,7 @@ class TextLayoutService {
   /// starts looping through the paragraph to calculate all layout metrics.
   ///
   /// It uses a [Spanometer] to perform measurements within spans of the
-  /// paragraph. It also uses [LineBuilders] to generate [EngineLineMetrics] as
+  /// paragraph. It also uses [LineBuilders] to generate [ParagraphLine]s as
   /// it iterates through the paragraph.
   ///
   /// The main loop keeps going until:
@@ -204,11 +208,13 @@ class TextLayoutService {
       }
     }
 
-    // ************************************************** //
-    // *** PARAGRAPH BASELINE & HEIGHT & LONGEST LINE *** //
-    // ************************************************** //
+    // ***************************************************************** //
+    // *** PARAGRAPH BASELINE & HEIGHT & LONGEST LINE & PAINT BOUNDS *** //
+    // ***************************************************************** //
 
-    for (final EngineLineMetrics line in lines) {
+    double boundsLeft = double.infinity;
+    double boundsRight = double.negativeInfinity;
+    for (final ParagraphLine line in lines) {
       height += line.height;
       if (alphabeticBaseline == -1.0) {
         alphabeticBaseline = line.baseline;
@@ -217,6 +223,38 @@ class TextLayoutService {
       final double longestLineWidth = longestLine?.width ?? 0.0;
       if (longestLineWidth < line.width) {
         longestLine = line;
+      }
+
+      final double left = line.left;
+      if (left < boundsLeft) {
+        boundsLeft = left;
+      }
+      final double right = left + line.width;
+      if (right > boundsRight) {
+        boundsRight = right;
+      }
+    }
+    _paintBounds = ui.Rect.fromLTRB(
+      boundsLeft,
+      0,
+      boundsRight,
+      height,
+    );
+
+    // ********************** //
+    // *** POSITION BOXES *** //
+    // ********************** //
+
+    if (lines.isNotEmpty) {
+      final ParagraphLine lastLine = lines.last;
+      final bool shouldJustifyParagraph =
+        width.isFinite &&
+        paragraph.paragraphStyle.textAlign == ui.TextAlign.justify;
+
+      for (final ParagraphLine line in lines) {
+        // Don't apply justification to the last line.
+        final bool shouldJustifyLine = shouldJustifyParagraph && line != lastLine;
+        _positionLineBoxes(line, withJustification: shouldJustifyLine);
       }
     }
 
@@ -270,12 +308,146 @@ class TextLayoutService {
     }
   }
 
+  ui.TextDirection get _paragraphDirection =>
+      paragraph.paragraphStyle.effectiveTextDirection;
+
+  /// Positions the boxes in the given [line] and takes into account their
+  /// directions, the paragraph's direction, and alignment justification.
+  void _positionLineBoxes(ParagraphLine line, {
+    required bool withJustification,
+  }) {
+    final List<RangeBox> boxes = line.boxes;
+    final double justifyPerSpaceBox = withJustification
+      ? _calculateJustifyPerSpaceBox(line)
+      : 0.0;
+
+    int i = 0;
+    double cumulativeWidth = 0.0;
+    while (i < boxes.length) {
+      final RangeBox box = boxes[i];
+      if (box.boxDirection == _paragraphDirection) {
+        // The box is in the same direction as the paragraph.
+        box.startOffset = cumulativeWidth;
+        box.lineWidth = line.width;
+        if (box is SpanBox && box.isSpaceOnly && !box.isTrailingSpace) {
+          box._width += justifyPerSpaceBox;
+        }
+
+        cumulativeWidth += box.width;
+        i++;
+        continue;
+      }
+
+      // At this point, we found a box that has the opposite direction to the
+      // paragraph. This could be a sequence of one or more boxes.
+      //
+      // These boxes should flow in the opposite direction. So we need to
+      // position them in reverse order.
+      //
+      // If the last box in the sequence is a space-only box (contains only
+      // whitespace characters), it should be excluded from the sequence.
+      //
+      // Example: an LTR paragraph with the contents:
+      //
+      // "ABC rtl1 rtl2 rtl3 XYZ"
+      //     ^    ^    ^    ^
+      //    SP1  SP2  SP3  SP4
+      //
+      //
+      // box direction:    LTR           RTL               LTR
+      //                |------>|<-----------------------|------>
+      //                +----------------------------------------+
+      //                | ABC | | rtl3 | | rtl2 | | rtl1 | | XYZ |
+      //                +----------------------------------------+
+      //                       ^        ^        ^        ^
+      //                      SP1      SP3      SP2      SP4
+      //
+      // Notice how SP2 and SP3 are flowing in the RTL direction because of the
+      // surrounding RTL words. SP4 is also preceded by an RTL word, but it marks
+      // the end of the RTL sequence, so it goes back to flowing in the paragraph
+      // direction (LTR).
+
+      final int first = i;
+      int lastNonSpaceBox = first;
+      i++;
+      while (i < boxes.length && boxes[i].boxDirection != _paragraphDirection) {
+        final RangeBox box = boxes[i];
+        if (box is SpanBox && box.isSpaceOnly) {
+          // Do nothing.
+        } else {
+          lastNonSpaceBox = i;
+        }
+        i++;
+      }
+      final int last = lastNonSpaceBox;
+      i = lastNonSpaceBox + 1;
+
+      // The range (first:last) is the entire sequence of boxes that have the
+      // opposite direction to the paragraph.
+      final double sequenceWidth = _positionLineBoxesInReverse(
+        line,
+        first,
+        last,
+        startOffset: cumulativeWidth,
+        justifyPerSpaceBox: justifyPerSpaceBox,
+      );
+      cumulativeWidth += sequenceWidth;
+    }
+  }
+
+  /// Positions a sequence of boxes in the direction opposite to the paragraph
+  /// text direction.
+  ///
+  /// This is needed when a right-to-left sequence appears in the middle of a
+  /// left-to-right paragraph, or vice versa.
+  ///
+  /// Returns the total width of all the positioned boxes in the sequence.
+  ///
+  /// [first] and [last] are expected to be inclusive.
+  double _positionLineBoxesInReverse(
+    ParagraphLine line,
+    int first,
+    int last, {
+    required double startOffset,
+    required double justifyPerSpaceBox,
+  }) {
+    final List<RangeBox> boxes = line.boxes;
+    double cumulativeWidth = 0.0;
+    for (int i = last; i >= first; i--) {
+      // Update the visual position of each box.
+      final RangeBox box = boxes[i];
+      assert(box.boxDirection != _paragraphDirection);
+      box.startOffset = startOffset + cumulativeWidth;
+      box.lineWidth = line.width;
+      if (box is SpanBox && box.isSpaceOnly &&  !box.isTrailingSpace) {
+        box._width += justifyPerSpaceBox;
+      }
+
+      cumulativeWidth += box.width;
+    }
+    return cumulativeWidth;
+  }
+
+  /// Calculates for the given [line], the amount of extra width that needs to be
+  /// added to each space box in order to align the line with the rest of the
+  /// paragraph.
+  double _calculateJustifyPerSpaceBox(ParagraphLine line) {
+    final double justifyTotal = width - line.width;
+
+    final int spaceBoxesToJustify = line.nonTrailingSpaceBoxCount;
+    if (spaceBoxesToJustify > 0) {
+      return justifyTotal / spaceBoxesToJustify;
+    }
+
+    return 0.0;
+  }
+
   List<ui.TextBox> getBoxesForPlaceholders() {
     final List<ui.TextBox> boxes = <ui.TextBox>[];
-    for (final EngineLineMetrics line in lines) {
-      for (final RangeBox box in line.boxes!) {
+    for (final ParagraphLine line in lines) {
+      for (final RangeBox box in line.boxes) {
         if (box is PlaceholderBox) {
-          boxes.add(box.toTextBox(line));
+          boxes.add(box.toTextBox(line, forPainting: false));
         }
       }
     }
@@ -301,11 +473,11 @@ class TextLayoutService {
 
     final List<ui.TextBox> boxes = <ui.TextBox>[];
 
-    for (final EngineLineMetrics line in lines) {
+    for (final ParagraphLine line in lines) {
       if (line.overlapsWith(start, end)) {
-        for (final RangeBox box in line.boxes!) {
+        for (final RangeBox box in line.boxes) {
           if (box is SpanBox && box.overlapsWith(start, end)) {
-            boxes.add(box.intersect(line, start, end));
+            boxes.add(box.intersect(line, start, end, forPainting: false));
           }
         }
       }
@@ -318,7 +490,7 @@ class TextLayoutService {
     // it possible to do hit testing. Once we find the box, we look inside that
     // box to find where exactly the `offset` is located.
 
-    final EngineLineMetrics line = _findLineForY(offset.dy);
+    final ParagraphLine line = _findLineForY(offset.dy);
     // [offset] is to the left of the line.
     if (offset.dx <= line.left) {
       return ui.TextPosition(
@@ -336,7 +508,7 @@ class TextLayoutService {
     }
 
     final double dx = offset.dx - line.left;
-    for (final RangeBox box in line.boxes!) {
+    for (final RangeBox box in line.boxes) {
       if (box.left <= dx && dx <= box.right) {
         return box.getPositionForX(dx);
       }
@@ -345,11 +517,11 @@ class TextLayoutService {
     return ui.TextPosition(offset: line.startIndex);
   }
 
-  EngineLineMetrics _findLineForY(double y) {
+  ParagraphLine _findLineForY(double y) {
     // We could do a binary search here but it's not worth it because the number
     // of line is typically low, and each iteration is a cheap comparison of
     // doubles.
-    for (final EngineLineMetrics line in lines) {
+    for (final ParagraphLine line in lines) {
       if (y <= line.height) {
         return line;
       }
@@ -396,7 +568,6 @@ abstract class RangeBox {
   RangeBox(
     this.start,
     this.end,
-    this.width,
     this.paragraphDirection,
     this.boxDirection,
   );
@@ -421,7 +592,7 @@ abstract class RangeBox {
       : lineWidth - startOffset;
 
   /// The distance from the left edge of the box to the right edge of the box.
-  final double width;
+  double get width;
 
   /// The width of the line that this box belongs to.
   late final double lineWidth;
@@ -447,7 +618,12 @@ abstract class RangeBox {
   ///
   /// The coordinates of the resulting [ui.TextBox] are relative to the
   /// paragraph, not to the line.
-  ui.TextBox toTextBox(EngineLineMetrics line);
+  ///
+  /// The [forPainting] parameter specifies whether the text box is wanted for
+  /// painting purposes or not. The difference is observed in the handling of
+  /// trailing spaces. Trailing spaces aren't painted on the screen, but their
+  /// dimensions are still useful for other cases like highlighting selection.
+  ui.TextBox toTextBox(ParagraphLine line, {required bool forPainting});
 
   /// Returns the text position within this box's range that's closest to the
   /// given [x] offset.
@@ -464,12 +640,15 @@ class PlaceholderBox extends RangeBox {
     required LineBreakResult index,
     required ui.TextDirection paragraphDirection,
     required ui.TextDirection boxDirection,
-  }) : super(index, index, placeholder.width, paragraphDirection, boxDirection);
+  }) : super(index, index, paragraphDirection, boxDirection);
 
   final PlaceholderSpan placeholder;
 
   @override
-  ui.TextBox toTextBox(EngineLineMetrics line) {
+  double get width => placeholder.width;
+
+  @override
+  ui.TextBox toTextBox(ParagraphLine line, {required bool forPainting}) {
     final double left = line.left + this.left;
     final double right = line.left + this.right;
 
@@ -536,7 +715,8 @@ class SpanBox extends RangeBox {
   })  : span = spanometer.currentSpan,
         height = spanometer.height,
         baseline = spanometer.ascent,
-        super(start, end, width, paragraphDirection, boxDirection);
+        _width = width,
+        super(start, end, paragraphDirection, boxDirection);
 
 
   final Spanometer spanometer;
@@ -566,6 +746,17 @@ class SpanBox extends RangeBox {
   /// Whether this box is made of only white space.
   final bool isSpaceOnly;
 
+  /// Whether this box is a trailing space box at the end of a line.
+  bool get isTrailingSpace => _isTrailingSpace;
+  bool _isTrailingSpace = false;
+
+  /// This is made mutable so it can be updated later in the layout process for
+  /// the purpose of aligning the lines of a paragraph with [ui.TextAlign.justify].
+  double _width;
+
+  @override
+  double get width => _width;
+
   /// Whether the contents of this box flow in the left-to-right direction.
   bool get isContentLtr => contentDirection == ui.TextDirection.ltr;
 
@@ -592,13 +783,9 @@ class SpanBox extends RangeBox {
     return spanometer.paragraph.toPlainText().substring(start.index, end.indexWithoutTrailingNewlines);
   }
 
-  /// Returns a [ui.TextBox] representing this range box in the given [line].
-  ///
-  /// The coordinates of the resulting [ui.TextBox] are relative to the
-  /// paragraph, not to the line.
   @override
-  ui.TextBox toTextBox(EngineLineMetrics line) {
-    return intersect(line, start.index, end.index);
+  ui.TextBox toTextBox(ParagraphLine line, {required bool forPainting}) {
+    return intersect(line, start.index, end.index, forPainting: forPainting);
   }
 
   /// Performs the intersection of this box with the range given by [start] and
@@ -606,7 +793,7 @@ class SpanBox extends RangeBox {
   ///
   /// The coordinates of the resulting [ui.TextBox] are relative to the
   /// paragraph, not to the line.
-  ui.TextBox intersect(EngineLineMetrics line, int start, int end) {
+  ui.TextBox intersect(ParagraphLine line, int start, int end, {required bool forPainting}) {
     final double top = line.baseline - baseline;
 
     final double before;
@@ -625,7 +812,7 @@ class SpanBox extends RangeBox {
       after = spanometer._measure(end, this.end.indexWithoutTrailingNewlines);
     }
 
-    final double left, right;
+    double left, right;
     if (isContentLtr) {
       // Example: let's say the text is "Loremipsum" and we want to get the box
       // for "rem". In this case, `before` is the width of "Lo", and `after`
@@ -657,6 +844,18 @@ class SpanBox extends RangeBox {
       // because the text flows from right to left.
       left = this.left + after;
       right = this.right - before;
+    }
+
+    // When painting a paragraph, trailing spaces should have a zero width.
+    final bool isZeroWidth = forPainting && isTrailingSpace;
+    if (isZeroWidth) {
+      // Collapse the box to the left or to the right depending on the paragraph
+      // direction.
+      if (paragraphDirection == ui.TextDirection.ltr) {
+        right = left;
+      } else {
+        left = right;
+      }
     }
 
     // The [RangeBox]'s left and right edges are relative to the line. In order
@@ -802,7 +1001,7 @@ class LineSegment {
   bool get isSpaceOnly => width == 0;
 }
 
-/// Builds instances of [EngineLineMetrics] for the given [paragraph].
+/// Builds instances of [ParagraphLine] for the given [paragraph].
 ///
 /// Usage of this class starts by calling [LineBuilder.first] to start building
 /// the first line of the paragraph.
@@ -810,7 +1009,7 @@ class LineSegment {
 /// Then new line breaks can be found by calling [LineBuilder.findNextBreak].
 ///
 /// The line can be extended one or more times before it's built by calling
-/// [LineBuilder.build] which generates the [EngineLineMetrics] instace.
+/// [LineBuilder.build] which generates the [ParagraphLine] instance.
 ///
 /// To start building the next line, simply call [LineBuilder.nextLine] which
 /// creates a new [LineBuilder] that can be extended and built and so on.
@@ -891,6 +1090,8 @@ class LineBuilder {
 
   /// Whether the end of this line is a prohibited break.
   bool get isEndProhibited => end.type == LineBreakType.prohibited;
+
+  int _spaceBoxCount = 0;
 
   bool get isEmpty => _segments.isEmpty;
   bool get isNotEmpty => _segments.isNotEmpty;
@@ -1131,6 +1332,9 @@ class LineBuilder {
     if (_currentBoxStart.index > poppedSegment.start.index) {
       final RangeBox poppedBox = _boxes.removeLast();
       _currentBoxStartOffset -= poppedBox.width;
+      if (poppedBox is SpanBox && poppedBox.isSpaceOnly) {
+        _spaceBoxCount--;
+      }
     }
 
     return poppedSegment;
@@ -1274,14 +1478,17 @@ class LineBuilder {
       isSpaceOnly: isSpaceOnly,
     ));
 
+    if (isSpaceOnly) {
+      _spaceBoxCount++;
+    }
+
     _currentBoxStartOffset = widthIncludingSpace;
   }
 
-  /// Builds the [EngineLineMetrics] instance that represents this line.
-  EngineLineMetrics build({String? ellipsis}) {
+  /// Builds the [ParagraphLine] instance that represents this line.
+  ParagraphLine build({String? ellipsis}) {
     // At the end of each line, we cut the last box of the line.
     createBox();
-    _positionBoxes();
 
     final double ellipsisWidth =
         ellipsis == null ? 0.0 : spanometer.measureText(ellipsis);
@@ -1293,8 +1500,11 @@ class LineBuilder {
     } else {
       hardBreak = end.isHard;
     }
-    return EngineLineMetrics.rich(
-      lineNumber,
+
+    _processTrailingSpaces();
+
+    return ParagraphLine(
+      lineNumber: lineNumber,
       ellipsis: ellipsis,
       startIndex: start.index,
       endIndex: end.index,
@@ -1308,106 +1518,26 @@ class LineBuilder {
       ascent: ascent,
       descent: descent,
       boxes: _boxes,
+      spaceBoxCount: _spaceBoxCount,
+      trailingSpaceBoxCount: _trailingSpaceBoxCount,
     );
   }
 
-  /// Positions the boxes and takes into account their directions, and the
-  /// paragraph's direction.
-  void _positionBoxes() {
-    final List<RangeBox> boxes = _boxes;
+  int _trailingSpaceBoxCount = 0;
 
-    int i = 0;
-    double cumulativeWidth = 0.0;
-    while (i < boxes.length) {
-      final RangeBox box = boxes[i];
-      if (box.boxDirection == _paragraphDirection) {
-        // The box is in the same direction as the paragraph.
-        box.startOffset = cumulativeWidth;
-        box.lineWidth = width;
-
-        cumulativeWidth += box.width;
-        i++;
-        continue;
+  void _processTrailingSpaces() {
+    _trailingSpaceBoxCount = 0;
+    for (int i = _boxes.length - 1; i >= 0; i--) {
+      final RangeBox box = _boxes[i];
+      final bool isSpaceBox = box is SpanBox && box.isSpaceOnly;
+      if (!isSpaceBox) {
+        // We traversed all trailing space boxes.
+        break;
       }
 
-      // At this point, we found a box that has the opposite direction to the
-      // paragraph. This could be a sequence of one or more boxes.
-      //
-      // These boxes should flow in the opposite direction. So we need to
-      // position them in reverse order.
-      //
-      // If the last box in the sequence is a space-only box (contains only
-      // whitespace characters), it should be excluded from the sequence.
-      //
-      // Example: an LTR paragraph with the contents:
-      //
-      // "ABC rtl1 rtl2 rtl3 XYZ"
-      //     ^    ^    ^    ^
-      //    SP1  SP2  SP3  SP4
-      //
-      //
-      // box direction:    LTR           RTL               LTR
-      //                |------>|<-----------------------|------>
-      //                +----------------------------------------+
-      //                | ABC | | rtl3 | | rtl2 | | rtl1 | | XYZ |
-      //                +----------------------------------------+
-      //                       ^        ^        ^        ^
-      //                      SP1      SP3      SP2      SP4
-      //
-      // Notice how SP2 and SP3 are flowing in the RTL direction because of the
-      // surrounding RTL words. SP4 is also preceded by an RTL word, but it marks
-      // the end of the RTL sequence, so it goes back to flowing in the paragraph
-      // direction (LTR).
-
-      final int first = i;
-      int lastNonSpaceBox = first;
-      i++;
-      while (i < boxes.length && boxes[i].boxDirection != _paragraphDirection) {
-        final RangeBox box = boxes[i];
-        if (box is SpanBox && box.isSpaceOnly) {
-          // Do nothing.
-        } else {
-          lastNonSpaceBox = i;
-        }
-        i++;
-      }
-      final int last = lastNonSpaceBox;
-      i = lastNonSpaceBox + 1;
-
-      // The range (first:last) is the entire sequence of boxes that have the
-      // opposite direction to the paragraph.
-      final double sequenceWidth =
-          _positionBoxesInReverse(boxes, first, last, startOffset: cumulativeWidth);
-      cumulativeWidth += sequenceWidth;
+      box._isTrailingSpace = true;
+      _trailingSpaceBoxCount++;
     }
-  }
-
-  /// Positions a sequence of boxes in the direction opposite to the paragraph
-  /// text direction.
-  ///
-  /// This is needed when a right-to-left sequence appears in the middle of a
-  /// left-to-right paragraph, or vice versa.
-  ///
-  /// Returns the total width of all the positioned boxes in the sequence.
-  ///
-  /// [first] and [last] are expected to be inclusive.
-  double _positionBoxesInReverse(
-    List<RangeBox> boxes,
-    int first,
-    int last, {
-    required double startOffset,
-  }) {
-    double cumulativeWidth = 0.0;
-    for (int i = last; i >= first; i--) {
-      // Update the visual position of each box.
-      final RangeBox box = boxes[i];
-      assert(box.boxDirection != _paragraphDirection);
-      box.startOffset = startOffset + cumulativeWidth;
-      box.lineWidth = width;
-
-      cumulativeWidth += box.width;
-    }
-    return cumulativeWidth;
   }
 
   LineBreakResult? _cachedNextBreak;
@@ -1452,7 +1582,7 @@ class Spanometer {
   Spanometer(this.paragraph, this.context);
 
   final CanvasParagraph paragraph;
-  final html.CanvasRenderingContext2D context;
+  final DomCanvasRenderingContext2D context;
 
   static RulerHost _rulerHost = RulerHost();
 

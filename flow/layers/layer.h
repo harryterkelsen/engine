@@ -5,13 +5,16 @@
 #ifndef FLUTTER_FLOW_LAYERS_LAYER_H_
 #define FLUTTER_FLOW_LAYERS_LAYER_H_
 
+#include <algorithm>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 #include "flutter/common/graphics/texture.h"
 #include "flutter/flow/diff_context.h"
 #include "flutter/flow/embedded_views.h"
 #include "flutter/flow/instrumentation.h"
+#include "flutter/flow/layer_snapshot_store.h"
 #include "flutter/flow/raster_cache.h"
 #include "flutter/fml/build_config.h"
 #include "flutter/fml/compiler_specific.h"
@@ -23,16 +26,19 @@
 #include "third_party/skia/include/core/SkColorFilter.h"
 #include "third_party/skia/include/core/SkMatrix.h"
 #include "third_party/skia/include/core/SkPath.h"
-#include "third_party/skia/include/core/SkPicture.h"
 #include "third_party/skia/include/core/SkRRect.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/utils/SkNWayCanvas.h"
-
 namespace flutter {
-
 namespace testing {
 class MockLayer;
 }  // namespace testing
+
+class ContainerLayer;
+class DisplayListLayer;
+class PerformanceOverlayLayer;
+class TextureLayer;
+class RasterCacheItem;
 
 static constexpr SkRect kGiantRect = SkRect::MakeLTRB(-1E9F, -1E9F, 1E9F, 1E9F);
 
@@ -53,7 +59,7 @@ struct PrerollContext {
   const Stopwatch& ui_time;
   TextureRegistry& texture_registry;
   const bool checkerboard_offscreen_layers;
-  const float frame_device_pixel_ratio;
+  const float frame_device_pixel_ratio = 1.0f;
 
   // These allow us to track properties like elevation, opacity, and the
   // prescence of a platform view during Preroll.
@@ -61,12 +67,84 @@ struct PrerollContext {
   // These allow us to track properties like elevation, opacity, and the
   // prescence of a texture layer during Preroll.
   bool has_texture_layer = false;
+
+  // This field indicates whether the subtree rooted at this layer can
+  // inherit an opacity value and modulate its visibility accordingly.
+  //
+  // Any layer is free to ignore this flag. Its value will be false upon
+  // entry into its Preroll method, it will remain false if it calls
+  // PrerollChildren on any children it might have, and it will remain
+  // false upon exit from the Preroll method unless it takes specific
+  // action compute if it should be true. Thus, this property is "opt-in".
+  //
+  // If the value is false when the Preroll method exits, then the
+  // |PaintContext::inherited_opacity| value should always be set to
+  // 1.0 when its |Paint| method is called.
+  //
+  // Leaf layers need only be concerned with their own rendering and
+  // can set the value according to whether they can apply the opacity.
+  //
+  // For containers, there are 3 ways to interact with this field:
+  //
+  // 1. If you need to know whether your children are compatible, then
+  //    set the field to true before you call PrerollChildren. That
+  //    method will then reset the field to false if it detects any
+  //    incompatible children.
+  //
+  // 2. If your decision on whether to inherit the opacity depends on
+  //    the answer from the children, then remember the value of the
+  //    field when PrerollChildren returns. (eg. OpacityLayer remembers
+  //    this value to control whether to set the opacity value into the
+  //    |PaintContext::inherited_opacity| field in |Paint| before
+  //    recursing to its children in Paint)
+  //
+  // 3. If you want to indicate to your parents that you can accept
+  //    inherited opacity regardless of whether your children were
+  //    compatible then set this field to true before returning
+  //    from your Preroll method. (eg. layers that always apply a
+  //    saveLayer when rendering anyway can apply the opacity there)
+  bool subtree_can_inherit_opacity = false;
+
+  std::vector<RasterCacheItem*>* raster_cached_entries;
 };
 
-class PictureLayer;
-class DisplayListLayer;
-class PerformanceOverlayLayer;
-class TextureLayer;
+struct PaintContext {
+  // When splitting the scene into multiple canvases (e.g when embedding
+  // a platform view on iOS) during the paint traversal we apply the non leaf
+  // flow layers to all canvases, and leaf layers just to the "current"
+  // canvas. Applying the non leaf layers to all canvases ensures that when
+  // we switch a canvas (when painting a PlatformViewLayer) the next canvas
+  // has the exact same state as the current canvas.
+  // The internal_nodes_canvas is a SkNWayCanvas which is used by non leaf
+  // and applies the operations to all canvases.
+  // The leaf_nodes_canvas is the "current" canvas and is used by leaf
+  // layers.
+  SkCanvas* internal_nodes_canvas;
+  SkCanvas* leaf_nodes_canvas;
+  GrDirectContext* gr_context;
+  SkColorSpace* dst_color_space;
+  ExternalViewEmbedder* view_embedder;
+  const Stopwatch& raster_time;
+  const Stopwatch& ui_time;
+  TextureRegistry& texture_registry;
+  const RasterCache* raster_cache;
+  const bool checkerboard_offscreen_layers;
+  const float frame_device_pixel_ratio = 1.0f;
+
+  // Snapshot store to collect leaf layer snapshots. The store is non-null
+  // only when leaf layer tracing is enabled.
+  LayerSnapshotStore* layer_snapshot_store = nullptr;
+  bool enable_leaf_layer_tracing = false;
+
+  // The following value should be used to modulate the opacity of the
+  // layer during |Paint|. If the layer does not set the corresponding
+  // |layer_can_inherit_opacity()| flag, then this value should always
+  // be |SK_Scalar1|. The value is to be applied as if by using a
+  // |saveLayer| with an |SkPaint| initialized to this alphaf value and
+  // a |kSrcOver| blend mode.
+  SkScalar inherited_opacity = SK_Scalar1;
+  DisplayListBuilder* leaf_nodes_builder = nullptr;
+};
 
 // Represents a single composited layer. Created on the UI thread but then
 // subquently used on the Rasterizer thread.
@@ -78,8 +156,6 @@ class Layer {
   void AssignOldLayer(Layer* old_layer) {
     original_layer_id_ = old_layer->original_layer_id_;
   }
-
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
 
   // Used to establish link between old layer and new layer that replaces it.
   // If this method returns true, it is assumed that this layer replaces the old
@@ -99,8 +175,6 @@ class Layer {
     // current and old region
     context->SetLayerPaintRegion(this, context->GetOldLayerPaintRegion(this));
   }
-
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
 
   virtual void Preroll(PrerollContext* context, const SkMatrix& matrix);
 
@@ -130,27 +204,52 @@ class Layer {
     bool prev_surface_needs_readback_;
   };
 
-  struct PaintContext {
-    // When splitting the scene into multiple canvases (e.g when embedding
-    // a platform view on iOS) during the paint traversal we apply the non leaf
-    // flow layers to all canvases, and leaf layers just to the "current"
-    // canvas. Applying the non leaf layers to all canvases ensures that when
-    // we switch a canvas (when painting a PlatformViewLayer) the next canvas
-    // has the exact same state as the current canvas.
-    // The internal_nodes_canvas is a SkNWayCanvas which is used by non leaf
-    // and applies the operations to all canvases.
-    // The leaf_nodes_canvas is the "current" canvas and is used by leaf
-    // layers.
-    SkCanvas* internal_nodes_canvas;
-    SkCanvas* leaf_nodes_canvas;
-    GrDirectContext* gr_context;
-    ExternalViewEmbedder* view_embedder;
-    const Stopwatch& raster_time;
-    const Stopwatch& ui_time;
-    TextureRegistry& texture_registry;
-    const RasterCache* raster_cache;
-    const bool checkerboard_offscreen_layers;
-    const float frame_device_pixel_ratio;
+  class AutoCachePaint {
+   public:
+    explicit AutoCachePaint(PaintContext& context) : context_(context) {
+      needs_paint_ = context.inherited_opacity < SK_Scalar1;
+      if (needs_paint_) {
+        sk_paint_.setAlphaf(context.inherited_opacity);
+        dl_paint_.setAlpha(SkScalarRoundToInt(context.inherited_opacity * 255));
+        context.inherited_opacity = SK_Scalar1;
+      }
+    }
+
+    ~AutoCachePaint() { context_.inherited_opacity = sk_paint_.getAlphaf(); }
+
+    void setImageFilter(sk_sp<SkImageFilter> filter) {
+      sk_paint_.setImageFilter(filter);
+      dl_paint_.setImageFilter(DlImageFilter::From(filter));
+      update_needs_paint();
+    }
+
+    void setColorFilter(sk_sp<SkColorFilter> filter) {
+      sk_paint_.setColorFilter(filter);
+      dl_paint_.setColorFilter(DlColorFilter::From(filter));
+      update_needs_paint();
+    }
+
+    void setBlendMode(DlBlendMode mode) {
+      sk_paint_.setBlendMode(ToSk(mode));
+      dl_paint_.setBlendMode(mode);
+      update_needs_paint();
+    }
+
+    const SkPaint* sk_paint() { return needs_paint_ ? &sk_paint_ : nullptr; }
+    const DlPaint* dl_paint() { return needs_paint_ ? &dl_paint_ : nullptr; }
+
+   private:
+    PaintContext& context_;
+    SkPaint sk_paint_;
+    DlPaint dl_paint_;
+    bool needs_paint_;
+
+    void update_needs_paint() {
+      needs_paint_ = sk_paint_.getImageFilter() != nullptr ||
+                     sk_paint_.getColorFilter() != nullptr ||
+                     !sk_paint_.isSrcOver() ||
+                     sk_paint_.getAlphaf() < SK_Scalar1;
+    }
   };
 
   // Calls SkCanvas::saveLayer and restores the layer upon destruction. Also
@@ -215,6 +314,8 @@ class Layer {
 
   virtual void Paint(PaintContext& context) const = 0;
 
+  virtual void PaintChildren(PaintContext& context) const { FML_DCHECK(false); }
+
   bool subtree_has_platform_view() const { return subtree_has_platform_view_; }
   void set_subtree_has_platform_view(bool value) {
     subtree_has_platform_view_ = value;
@@ -257,6 +358,9 @@ class Layer {
       // See https://github.com/flutter/flutter/issues/81419
       return true;
     }
+    if (context.inherited_opacity == 0) {
+      return false;
+    }
     // Workaround for Skia bug (quickReject does not reject empty bounds).
     // https://bugs.chromium.org/p/skia/issues/detail?id=10951
     if (paint_bounds_.isEmpty()) {
@@ -271,9 +375,10 @@ class Layer {
 
   uint64_t unique_id() const { return unique_id_; }
 
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
-
-  virtual const PictureLayer* as_picture_layer() const { return nullptr; }
+  virtual RasterCacheKeyID caching_key_id() const {
+    return RasterCacheKeyID(unique_id_, RasterCacheKeyType::kLayer);
+  }
+  virtual const ContainerLayer* as_container_layer() const { return nullptr; }
   virtual const DisplayListLayer* as_display_list_layer() const {
     return nullptr;
   }
@@ -282,8 +387,6 @@ class Layer {
     return nullptr;
   }
   virtual const testing::MockLayer* as_mock_layer() const { return nullptr; }
-
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
 
  private:
   SkRect paint_bounds_;

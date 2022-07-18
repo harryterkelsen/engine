@@ -26,8 +26,6 @@ TransformLayer::TransformLayer(const SkMatrix& transform)
   }
 }
 
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
-
 void TransformLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffContext::AutoSubtreeRestore subtree(context);
   auto* prev = static_cast<const TransformLayer*>(old_layer);
@@ -41,8 +39,6 @@ void TransformLayer::Diff(DiffContext* context, const Layer* old_layer) {
   DiffChildren(context, prev);
   context->SetLayerPaintRegion(this, context->CurrentSubtreeRegion());
 }
-
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
 
 void TransformLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   TRACE_EVENT0("flutter", "TransformLayer::Preroll");
@@ -59,6 +55,10 @@ void TransformLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   } else {
     context->cull_rect = kGiantRect;
   }
+
+  // Collect inheritance information on our children in Preroll so that
+  // we can pass it along by default.
+  context->subtree_can_inherit_opacity = true;
 
   SkRect child_paint_bounds = SkRect::MakeEmpty();
   PrerollChildren(context, child_matrix, &child_paint_bounds);

@@ -44,14 +44,14 @@ TEST(FlDartProjectTest, DartEntrypointArgs) {
   char** retrieved_args =
       fl_dart_project_get_dart_entrypoint_arguments(project);
 
-  EXPECT_EQ(g_strv_length(retrieved_args), 0U);
+  EXPECT_EQ(retrieved_args, nullptr);
 
   GPtrArray* args_array = g_ptr_array_new();
-  g_ptr_array_add(args_array, (gpointer) "arg_one");
-  g_ptr_array_add(args_array, (gpointer) "arg_two");
-  g_ptr_array_add(args_array, (gpointer) "arg_three");
+  g_ptr_array_add(args_array, const_cast<char*>("arg_one"));
+  g_ptr_array_add(args_array, const_cast<char*>("arg_two"));
+  g_ptr_array_add(args_array, const_cast<char*>("arg_three"));
   g_ptr_array_add(args_array, nullptr);
-  gchar** args = (gchar**)g_ptr_array_free(args_array, false);
+  gchar** args = reinterpret_cast<gchar**>(g_ptr_array_free(args_array, false));
 
   fl_dart_project_set_dart_entrypoint_arguments(project, args);
 

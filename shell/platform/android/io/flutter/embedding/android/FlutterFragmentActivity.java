@@ -5,11 +5,13 @@
 package io.flutter.embedding.android;
 
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.DART_ENTRYPOINT_META_DATA_KEY;
+import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.DART_ENTRYPOINT_URI_META_DATA_KEY;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.DEFAULT_BACKGROUND_MODE;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.DEFAULT_DART_ENTRYPOINT;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.DEFAULT_INITIAL_ROUTE;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.EXTRA_BACKGROUND_MODE;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.EXTRA_CACHED_ENGINE_ID;
+import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.EXTRA_DART_ENTRYPOINT_ARGS;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.EXTRA_DESTROY_ENGINE_WITH_ACTIVITY;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.EXTRA_INITIAL_ROUTE;
 import static io.flutter.embedding.android.FlutterActivityLaunchConfigs.HANDLE_DEEPLINKING_META_DATA_KEY;
@@ -45,6 +47,9 @@ import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.embedding.engine.FlutterShellArgs;
 import io.flutter.embedding.engine.plugins.util.GeneratedPluginRegister;
 import io.flutter.plugin.platform.PlatformPlugin;
+import io.flutter.util.ViewUtils;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A Flutter {@code Activity} that is based upon {@link FragmentActivity}.
@@ -64,7 +69,8 @@ public class FlutterFragmentActivity extends FragmentActivity
   // FlutterFragment management.
   private static final String TAG_FLUTTER_FRAGMENT = "flutter_fragment";
   // TODO(mattcarroll): replace ID with R.id when build system supports R.java
-  private static final int FRAGMENT_CONTAINER_ID = 609893468; // random number
+  public static final int FRAGMENT_CONTAINER_ID =
+      ViewUtils.generateViewId(609893468); // random number
 
   /**
    * Creates an {@link Intent} that launches a {@code FlutterFragmentActivity}, which executes a
@@ -94,6 +100,7 @@ public class FlutterFragmentActivity extends FragmentActivity
     private final Class<? extends FlutterFragmentActivity> activityClass;
     private String initialRoute = DEFAULT_INITIAL_ROUTE;
     private String backgroundMode = DEFAULT_BACKGROUND_MODE;
+    @Nullable private List<String> dartEntrypointArgs;
 
     /**
      * Constructor that allows this {@code NewEngineIntentBuilder} to be used by subclasses of
@@ -143,15 +150,35 @@ public class FlutterFragmentActivity extends FragmentActivity
     }
 
     /**
+     * The Dart entrypoint arguments will be passed as a list of string to Dart's entrypoint
+     * function.
+     *
+     * <p>A value of null means do not pass any arguments to Dart's entrypoint function.
+     *
+     * @param dartEntrypointArgs The Dart entrypoint arguments.
+     * @return The engine intent builder.
+     */
+    @NonNull
+    public NewEngineIntentBuilder dartEntrypointArgs(@Nullable List<String> dartEntrypointArgs) {
+      this.dartEntrypointArgs = dartEntrypointArgs;
+      return this;
+    }
+
+    /**
      * Creates and returns an {@link Intent} that will launch a {@code FlutterFragmentActivity} with
      * the desired configuration.
      */
     @NonNull
     public Intent build(@NonNull Context context) {
-      return new Intent(context, activityClass)
-          .putExtra(EXTRA_INITIAL_ROUTE, initialRoute)
-          .putExtra(EXTRA_BACKGROUND_MODE, backgroundMode)
-          .putExtra(EXTRA_DESTROY_ENGINE_WITH_ACTIVITY, true);
+      Intent intent =
+          new Intent(context, activityClass)
+              .putExtra(EXTRA_INITIAL_ROUTE, initialRoute)
+              .putExtra(EXTRA_BACKGROUND_MODE, backgroundMode)
+              .putExtra(EXTRA_DESTROY_ENGINE_WITH_ACTIVITY, true);
+      if (dartEntrypointArgs != null) {
+        intent.putExtra(EXTRA_DART_ENTRYPOINT_ARGS, new ArrayList(dartEntrypointArgs));
+      }
+      return intent;
     }
   }
 
@@ -460,6 +487,9 @@ public class FlutterFragmentActivity extends FragmentActivity
               + "Dart entrypoint: "
               + getDartEntrypointFunctionName()
               + "\n"
+              + "Dart entrypoint library uri: "
+              + (getDartEntrypointLibraryUri() != null ? getDartEntrypointLibraryUri() : "\"\"")
+              + "\n"
               + "Initial route: "
               + getInitialRoute()
               + "\n"
@@ -471,6 +501,8 @@ public class FlutterFragmentActivity extends FragmentActivity
 
       return FlutterFragment.withNewEngine()
           .dartEntrypoint(getDartEntrypointFunctionName())
+          .dartLibraryUri(getDartEntrypointLibraryUri())
+          .dartEntrypointArgs(getDartEntrypointArgs())
           .initialRoute(getInitialRoute())
           .appBundlePath(getAppBundlePath())
           .flutterShellArgs(FlutterShellArgs.fromIntent(getIntent()))
@@ -690,6 +722,44 @@ public class FlutterFragmentActivity extends FragmentActivity
       return desiredDartEntrypoint != null ? desiredDartEntrypoint : DEFAULT_DART_ENTRYPOINT;
     } catch (PackageManager.NameNotFoundException e) {
       return DEFAULT_DART_ENTRYPOINT;
+    }
+  }
+
+  /**
+   * The Dart entrypoint arguments will be passed as a list of string to Dart's entrypoint function.
+   *
+   * <p>A value of null means do not pass any arguments to Dart's entrypoint function.
+   *
+   * <p>Subclasses may override this method to directly control the Dart entrypoint arguments.
+   */
+  @Nullable
+  public List<String> getDartEntrypointArgs() {
+    return (List<String>) getIntent().getSerializableExtra(EXTRA_DART_ENTRYPOINT_ARGS);
+  }
+
+  /**
+   * The Dart library URI for the entrypoint that will be executed as soon as the Dart snapshot is
+   * loaded.
+   *
+   * <p>Example value: "package:foo/bar.dart"
+   *
+   * <p>This preference can be controlled by setting a {@code <meta-data>} called {@link
+   * FlutterActivityLaunchConfigs#DART_ENTRYPOINT_URI_META_DATA_KEY} within the Android manifest
+   * definition for this {@code FlutterFragmentActivity}.
+   *
+   * <p>A value of null means use the default root library.
+   *
+   * <p>Subclasses may override this method to directly control the Dart entrypoint uri.
+   */
+  @Nullable
+  public String getDartEntrypointLibraryUri() {
+    try {
+      Bundle metaData = getMetaData();
+      String desiredDartLibraryUri =
+          metaData != null ? metaData.getString(DART_ENTRYPOINT_URI_META_DATA_KEY) : null;
+      return desiredDartLibraryUri;
+    } catch (PackageManager.NameNotFoundException e) {
+      return null;
     }
   }
 

@@ -10,6 +10,7 @@
 
 #include "flutter/flow/compositor_context.h"
 #include "flutter/flow/layers/layer.h"
+#include "flutter/flow/raster_cache.h"
 #include "flutter/fml/macros.h"
 #include "flutter/fml/time/time_delta.h"
 #include "third_party/skia/include/core/SkPicture.h"
@@ -29,12 +30,18 @@ class LayerTree {
   //   layer tree performs any operations that require readback
   //   from the root surface.
   bool Preroll(CompositorContext::ScopedFrame& frame,
-               bool ignore_raster_cache = false);
+               bool ignore_raster_cache = false,
+               SkRect cull_rect = kGiantRect);
+
+  static void TryToRasterCache(
+      const std::vector<RasterCacheItem*>& raster_cached_entries,
+      const PaintContext* paint_context,
+      bool ignore_raster_cache = false);
 
   void Paint(CompositorContext::ScopedFrame& frame,
              bool ignore_raster_cache = false) const;
 
-  sk_sp<SkPicture> Flatten(const SkRect& bounds);
+  sk_sp<DisplayList> Flatten(const SkRect& bounds);
 
   Layer* root_layer() const { return root_layer_.get(); }
 
@@ -45,12 +52,8 @@ class LayerTree {
   const SkISize& frame_size() const { return frame_size_; }
   float device_pixel_ratio() const { return device_pixel_ratio_; }
 
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
-
   const PaintRegionMap& paint_region_map() const { return paint_region_map_; }
   PaintRegionMap& paint_region_map() { return paint_region_map_; }
-
-#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
 
   // The number of frame intervals missed after which the compositor must
   // trace the rasterized picture to a trace file. Specify 0 to disable all
@@ -71,6 +74,18 @@ class LayerTree {
     checkerboard_offscreen_layers_ = checkerboard;
   }
 
+  /// When `Paint` is called, if leaf layer tracing is enabled, additional
+  /// metadata around raterization of leaf layers is collected.
+  ///
+  /// See: `LayerSnapshotStore`
+  void enable_leaf_layer_tracing(bool enable) {
+    enable_leaf_layer_tracing_ = enable;
+  }
+
+  bool is_leaf_layer_tracing_enabled() const {
+    return enable_leaf_layer_tracing_;
+  }
+
  private:
   std::shared_ptr<Layer> root_layer_;
   SkISize frame_size_ = SkISize::MakeEmpty();  // Physical pixels.
@@ -78,10 +93,11 @@ class LayerTree {
   uint32_t rasterizer_tracing_threshold_;
   bool checkerboard_raster_cache_images_;
   bool checkerboard_offscreen_layers_;
+  bool enable_leaf_layer_tracing_ = false;
 
-#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
   PaintRegionMap paint_region_map_;
-#endif  //  FLUTTER_ENABLE_DIFF_CONTEXT
+
+  std::vector<RasterCacheItem*> raster_cache_items_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(LayerTree);
 };

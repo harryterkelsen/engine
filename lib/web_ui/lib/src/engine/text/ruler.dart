@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
-
 import 'package:ui/ui.dart' as ui;
 
 import '../browser_detection.dart';
-import '../dom_renderer.dart';
+import '../dom.dart';
+import '../embedder.dart';
 import '../util.dart';
 import 'measurement.dart';
 import 'paragraph.dart';
@@ -24,7 +23,7 @@ String buildCssFontString({
   if (fontStyle != null) {
     result.write(fontStyle == ui.FontStyle.normal ? 'normal' : 'italic');
   } else {
-    result.write(DomRenderer.defaultFontStyle);
+    result.write(FlutterViewEmbedder.defaultFontStyle);
   }
   result.write(' ');
 
@@ -32,14 +31,14 @@ String buildCssFontString({
   if (fontWeight != null) {
     result.write(fontWeightToCss(fontWeight));
   } else {
-    result.write(DomRenderer.defaultFontWeight);
+    result.write(FlutterViewEmbedder.defaultFontWeight);
   }
   result.write(' ');
 
   if (fontSize != null) {
     result.write(fontSize.floor());
   } else {
-    result.write(DomRenderer.defaultFontSize);
+    result.write(FlutterViewEmbedder.defaultFontSize);
   }
   result.write('px ');
   result.write(canonicalizeFontFamily(fontFamily));
@@ -47,169 +46,23 @@ String buildCssFontString({
   return result.toString();
 }
 
-/// Contains the subset of [ui.ParagraphStyle] properties that affect layout.
-class ParagraphGeometricStyle {
-  ParagraphGeometricStyle({
-    required this.textDirection,
-    required this.textAlign,
-    this.fontWeight,
-    this.fontStyle,
-    this.fontFamily,
-    this.fontSize,
-    this.lineHeight,
-    this.maxLines,
-    this.letterSpacing,
-    this.wordSpacing,
-    this.decoration,
-    this.ellipsis,
-    this.shadows,
-  });
-
-  final ui.TextDirection textDirection;
-  final ui.TextAlign textAlign;
-  final ui.FontWeight? fontWeight;
-  final ui.FontStyle? fontStyle;
-  final String? fontFamily;
-  final double? fontSize;
-  final double? lineHeight;
-  final int? maxLines;
-  final double? letterSpacing;
-  final double? wordSpacing;
-  final String? decoration;
-  final String? ellipsis;
-  final List<ui.Shadow>? shadows;
-
-  // Since all fields above are primitives, cache hashcode since ruler lookups
-  // use this style as key.
-  int? _cachedHashCode;
-
-  /// Returns the font-family that should be used to style the paragraph. It may
-  /// or may not be different from [fontFamily]:
-  ///
-  /// - Always returns "Ahem" in tests.
-  /// - Provides correct defaults when [fontFamily] doesn't have a value.
-  String get effectiveFontFamily {
-    if (assertionsEnabled) {
-      // In widget tests we use a predictable-size font "Ahem". This makes
-      // widget tests predictable and less flaky.
-      if (ui.debugEmulateFlutterTesterEnvironment) {
-        return 'Ahem';
-      }
-    }
-    final String? localFontFamily = fontFamily;
-    if (localFontFamily == null || localFontFamily.isEmpty) {
-      return DomRenderer.defaultFontFamily;
-    }
-    return localFontFamily;
-  }
-
-  String? _cssFontString;
-
-  /// Cached font string that can be used in CSS.
-  ///
-  /// See <https://developer.mozilla.org/en-US/docs/Web/CSS/font>.
-  String get cssFontString {
-    return _cssFontString ??= buildCssFontString(
-      fontStyle: fontStyle,
-      fontWeight: fontWeight,
-      fontSize: fontSize,
-      fontFamily: effectiveFontFamily,
-    );
-  }
-
-  TextHeightStyle? _cachedHeightStyle;
-
-  TextHeightStyle get textHeightStyle {
-    TextHeightStyle? style = _cachedHeightStyle;
-    if (style == null) {
-      style = TextHeightStyle(
-        fontFamily: effectiveFontFamily,
-        fontSize: fontSize ?? DomRenderer.defaultFontSize,
-        height: lineHeight,
-        // TODO(mdebbar): Pass the actual value when font features become supported
-        //                https://github.com/flutter/flutter/issues/64595
-        fontFeatures: null,
-      );
-      _cachedHeightStyle = style;
-    }
-    return style;
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) {
-      return true;
-    }
-    if (other.runtimeType != runtimeType) {
-      return false;
-    }
-    return other is ParagraphGeometricStyle
-        && other.textDirection == textDirection
-        && other.textAlign == textAlign
-        && other.fontWeight == fontWeight
-        && other.fontStyle == fontStyle
-        && other.fontFamily == fontFamily
-        && other.fontSize == fontSize
-        && other.lineHeight == lineHeight
-        && other.maxLines == maxLines
-        && other.letterSpacing == letterSpacing
-        && other.wordSpacing == wordSpacing
-        && other.decoration == decoration
-        && other.ellipsis == ellipsis;
-  }
-
-  @override
-  int get hashCode => _cachedHashCode ??= ui.hashValues(
-        textDirection,
-        textAlign,
-        fontWeight,
-        fontStyle,
-        fontFamily,
-        fontSize,
-        lineHeight,
-        maxLines,
-        letterSpacing,
-        wordSpacing,
-        decoration,
-        ellipsis,
-      );
-
-  @override
-  String toString() {
-    if (assertionsEnabled) {
-      return '$runtimeType(textDirection: $textDirection, textAlign: $textAlign,'
-          ' fontWeight: $fontWeight,'
-          ' fontStyle: $fontStyle,'
-          ' fontFamily: $fontFamily, fontSize: $fontSize,'
-          ' lineHeight: $lineHeight,'
-          ' maxLines: $maxLines,'
-          ' letterSpacing: $letterSpacing,'
-          ' wordSpacing: $wordSpacing,'
-          ' decoration: $decoration,'
-          ' ellipsis: $ellipsis,'
-          ')';
-    } else {
-      return super.toString();
-    }
-  }
-}
-
 /// Contains all styles that have an effect on the height of text.
 ///
-/// This is useful as a cache key for [TextHeightRuler]. It's more efficient
-/// than using the entire [ParagraphGeometricStyle] as a cache key.
+/// This is useful as a cache key for [TextHeightRuler].
 class TextHeightStyle {
   TextHeightStyle({
     required this.fontFamily,
     required this.fontSize,
     required this.height,
     required this.fontFeatures,
+    required this.fontVariations,
   });
 
   final String fontFamily;
   final double fontSize;
   final double? height;
   final List<ui.FontFeature>? fontFeatures;
+  final List<ui.FontVariation>? fontVariations;
 
   @override
   bool operator ==(Object other) {
@@ -220,11 +73,12 @@ class TextHeightStyle {
   }
 
   @override
-  late final int hashCode = ui.hashValues(
+  late final int hashCode = Object.hash(
     fontFamily,
     fontSize,
     height,
-    ui.hashList(fontFeatures),
+    fontFeatures == null ? null : Object.hashAll(fontFeatures!),
+    fontVariations == null ? null : Object.hashAll(fontVariations!),
   );
 }
 
@@ -243,8 +97,8 @@ class TextHeightStyle {
 class TextDimensions {
   TextDimensions(this._element);
 
-  final html.HtmlElement _element;
-  html.Rectangle<num>? _cachedBoundingClientRect;
+  final DomElement _element;
+  DomRect? _cachedBoundingClientRect;
 
   void _invalidateBoundsCache() {
     _cachedBoundingClientRect = null;
@@ -259,10 +113,10 @@ class TextDimensions {
   void applyHeightStyle(TextHeightStyle textHeightStyle) {
     final String fontFamily = textHeightStyle.fontFamily;
     final double fontSize = textHeightStyle.fontSize;
-    final html.CssStyleDeclaration style = _element.style;
+    final DomCSSStyleDeclaration style = _element.style;
     style
       ..fontSize = '${fontSize.floor()}px'
-      ..fontFamily = canonicalizeFontFamily(fontFamily);
+      ..fontFamily = canonicalizeFontFamily(fontFamily)!;
 
     final double? height = textHeightStyle.height;
     if (height != null) {
@@ -273,12 +127,12 @@ class TextDimensions {
 
   /// Appends element and probe to hostElement that is set up for a specific
   /// TextStyle.
-  void appendToHost(html.HtmlElement hostElement) {
+  void appendToHost(DomHTMLElement hostElement) {
     hostElement.append(_element);
     _invalidateBoundsCache();
   }
 
-  html.Rectangle<num> _readAndCacheMetrics() =>
+  DomRect _readAndCacheMetrics() =>
       _cachedBoundingClientRect ??= _element.getBoundingClientRect();
 
   /// The height of the paragraph being measured.
@@ -311,9 +165,9 @@ class TextHeightRuler {
   final RulerHost rulerHost;
 
   // Elements used to measure the line-height metric.
-  late final html.HtmlElement _probe = _createProbe();
-  late final html.HtmlElement _host = _createHost();
-  final TextDimensions _dimensions = TextDimensions(html.ParagraphElement());
+  late final DomHTMLElement _probe = _createProbe();
+  late final DomHTMLElement _host = _createHost();
+  final TextDimensions _dimensions = TextDimensions(domDocument.createElement('flt-paragraph'));
 
   /// The alphabetic baseline for this ruler's [textHeightStyle].
   late final double alphabeticBaseline = _probe.getBoundingClientRect().bottom.toDouble();
@@ -326,8 +180,8 @@ class TextHeightRuler {
     _host.remove();
   }
 
-  html.HtmlElement _createHost() {
-    final html.DivElement host = html.DivElement();
+  DomHTMLElement _createHost() {
+    final DomHTMLDivElement host = createDomHTMLDivElement();
     host.style
       ..visibility = 'hidden'
       ..position = 'absolute'
@@ -353,12 +207,15 @@ class TextHeightRuler {
     _dimensions.updateTextToSpace();
 
     _dimensions.appendToHost(host);
+
+    // [rulerHost] is not migrated yet so add a cast to [html.HtmlElement].
+    // This cast will be removed after the migration is complete.
     rulerHost.addElement(host);
     return host;
   }
 
-  html.HtmlElement _createProbe() {
-    final html.HtmlElement probe = html.DivElement();
+  DomHTMLElement _createProbe() {
+    final DomHTMLElement probe = createDomHTMLDivElement();
     _host.append(probe);
     return probe;
   }

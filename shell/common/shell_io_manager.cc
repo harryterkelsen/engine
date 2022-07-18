@@ -4,8 +4,6 @@
 
 #include "flutter/shell/common/shell_io_manager.h"
 
-#include "flutter/common/graphics/persistent_cache.h"
-#include "flutter/fml/build_config.h"
 #include "flutter/fml/message_loop.h"
 #include "flutter/shell/common/context_options.h"
 #include "third_party/skia/include/gpu/gl/GrGLInterface.h"
@@ -25,7 +23,7 @@ sk_sp<GrDirectContext> ShellIOManager::CreateCompatibleResourceLoadingContext(
   if (auto context = GrDirectContext::MakeGL(gl_interface, options)) {
     // Do not cache textures created by the image decoder.  These textures
     // should be deleted when they are no longer referenced by an SkImage.
-    context->setResourceCacheLimits(0, 0);
+    context->setResourceCacheLimit(0);
     return context;
   }
 #endif
@@ -36,7 +34,9 @@ sk_sp<GrDirectContext> ShellIOManager::CreateCompatibleResourceLoadingContext(
 ShellIOManager::ShellIOManager(
     sk_sp<GrDirectContext> resource_context,
     std::shared_ptr<const fml::SyncSwitch> is_gpu_disabled_sync_switch,
-    fml::RefPtr<fml::TaskRunner> unref_queue_task_runner)
+    fml::RefPtr<fml::TaskRunner> unref_queue_task_runner,
+    std::shared_ptr<impeller::Context> impeller_context,
+    fml::TimeDelta unref_queue_drain_delay)
     : resource_context_(std::move(resource_context)),
       resource_context_weak_factory_(
           resource_context_
@@ -45,9 +45,10 @@ ShellIOManager::ShellIOManager(
               : nullptr),
       unref_queue_(fml::MakeRefCounted<flutter::SkiaUnrefQueue>(
           std::move(unref_queue_task_runner),
-          fml::TimeDelta::FromMilliseconds(8),
-          GetResourceContext())),
+          unref_queue_drain_delay,
+          resource_context_)),
       is_gpu_disabled_sync_switch_(is_gpu_disabled_sync_switch),
+      impeller_context_(std::move(impeller_context)),
       weak_factory_(this) {
   if (!resource_context_) {
 #ifndef OS_FUCHSIA
@@ -83,6 +84,7 @@ void ShellIOManager::UpdateResourceContext(
           ? std::make_unique<fml::WeakPtrFactory<GrDirectContext>>(
                 resource_context_.get())
           : nullptr;
+  unref_queue_->UpdateResourceContext(resource_context_);
 }
 
 fml::WeakPtr<ShellIOManager> ShellIOManager::GetWeakPtr() {
@@ -110,6 +112,11 @@ fml::WeakPtr<IOManager> ShellIOManager::GetWeakIOManager() const {
 std::shared_ptr<const fml::SyncSwitch>
 ShellIOManager::GetIsGpuDisabledSyncSwitch() {
   return is_gpu_disabled_sync_switch_;
+}
+
+// |IOManager|
+std::shared_ptr<impeller::Context> ShellIOManager::GetImpellerContext() const {
+  return impeller_context_;
 }
 
 }  // namespace flutter

@@ -11,9 +11,9 @@
 #include "third_party/tonic/converter/dart_converter.h"
 #include "third_party/tonic/dart_message_handler.h"
 
-#if defined(OS_ANDROID)
+#if defined(FML_OS_ANDROID)
 #include <android/log.h>
-#elif defined(OS_IOS)
+#elif defined(FML_OS_IOS)
 extern "C" {
 // Cannot import the syslog.h header directly because of macro collision.
 extern void syslog(int, const char*, ...);
@@ -56,7 +56,6 @@ UIDartState::UIDartState(
     std::shared_ptr<IsolateNameServer> isolate_name_server,
     bool is_root_isolate,
     bool enable_skparagraph,
-    bool enable_display_list,
     const UIDartState::Context& context)
     : add_callback_(std::move(add_callback)),
       remove_callback_(std::move(remove_callback)),
@@ -66,7 +65,6 @@ UIDartState::UIDartState(
       log_message_callback_(log_message_callback),
       isolate_name_server_(std::move(isolate_name_server)),
       enable_skparagraph_(enable_skparagraph),
-      enable_display_list_(enable_display_list),
       context_(std::move(context)) {
   AddOrRemoveTaskObserver(true /* add */);
 }
@@ -77,10 +75,6 @@ UIDartState::~UIDartState() {
 
 const std::string& UIDartState::GetAdvisoryScriptURI() const {
   return context_.advisory_script_uri;
-}
-
-const std::string& UIDartState::GetAdvisoryScriptEntrypoint() const {
-  return context_.advisory_script_entrypoint;
 }
 
 void UIDartState::DidSetIsolate() {
@@ -138,7 +132,7 @@ std::shared_ptr<VolatilePathTracker> UIDartState::GetVolatilePathTracker()
 }
 
 void UIDartState::ScheduleMicrotask(Dart_Handle closure) {
-  if (tonic::LogIfError(closure) || !Dart_IsClosure(closure)) {
+  if (tonic::CheckAndHandleError(closure) || !Dart_IsClosure(closure)) {
     return;
   }
 
@@ -169,13 +163,6 @@ fml::WeakPtr<SnapshotDelegate> UIDartState::GetSnapshotDelegate() const {
   return context_.snapshot_delegate;
 }
 
-fml::WeakPtr<GrDirectContext> UIDartState::GetResourceContext() const {
-  if (!context_.io_manager) {
-    return {};
-  }
-  return context_.io_manager->GetResourceContext();
-}
-
 fml::WeakPtr<ImageDecoder> UIDartState::GetImageDecoder() const {
   return context_.image_decoder;
 }
@@ -197,38 +184,25 @@ tonic::DartErrorHandleType UIDartState::GetLastError() {
   return error;
 }
 
-void UIDartState::ReportUnhandledException(const std::string& error,
-                                           const std::string& stack_trace) {
-  if (unhandled_exception_callback_ &&
-      unhandled_exception_callback_(error, stack_trace)) {
-    return;
-  }
-
-  // Either the exception handler was not set or it could not handle the error,
-  // just log the exception.
-  FML_LOG(ERROR) << "Unhandled Exception: " << error << std::endl
-                 << stack_trace;
-}
-
 void UIDartState::LogMessage(const std::string& tag,
                              const std::string& message) const {
   if (log_message_callback_) {
     log_message_callback_(tag, message);
   } else {
     // Fall back to previous behavior if unspecified.
-#if defined(OS_ANDROID)
+#if defined(FML_OS_ANDROID)
     __android_log_print(ANDROID_LOG_INFO, tag.c_str(), "%.*s",
                         (int)message.size(), message.c_str());
-#elif defined(OS_IOS)
+#elif defined(FML_OS_IOS)
     std::stringstream stream;
-    if (tag.size() > 0) {
+    if (!tag.empty()) {
       stream << tag << ": ";
     }
     stream << message;
     std::string log = stream.str();
     syslog(1 /* LOG_ALERT */, "%.*s", (int)log.size(), log.c_str());
 #else
-    if (tag.size() > 0) {
+    if (!tag.empty()) {
       std::cout << tag << ": ";
     }
     std::cout << message << std::endl;
@@ -238,10 +212,6 @@ void UIDartState::LogMessage(const std::string& tag,
 
 bool UIDartState::enable_skparagraph() const {
   return enable_skparagraph_;
-}
-
-bool UIDartState::enable_display_list() const {
-  return enable_display_list_;
 }
 
 }  // namespace flutter

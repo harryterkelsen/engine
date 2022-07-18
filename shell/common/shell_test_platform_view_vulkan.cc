@@ -8,6 +8,16 @@
 #include "flutter/shell/common/context_options.h"
 #include "flutter/vulkan/vulkan_utilities.h"
 
+#if OS_FUCHSIA
+#define VULKAN_SO_PATH "libvulkan.so"
+#elif FML_OS_MACOSX
+#define VULKAN_SO_PATH "libvk_swiftshader.dylib"
+#elif FML_OS_WIN
+#define VULKAN_SO_PATH "vk_swiftshader.dll"
+#else
+#define VULKAN_SO_PATH "libvk_swiftshader.so"
+#endif
+
 namespace flutter {
 namespace testing {
 
@@ -21,7 +31,7 @@ ShellTestPlatformViewVulkan::ShellTestPlatformViewVulkan(
     : ShellTestPlatformView(delegate, std::move(task_runners)),
       create_vsync_waiter_(std::move(create_vsync_waiter)),
       vsync_clock_(vsync_clock),
-      proc_table_(fml::MakeRefCounted<vulkan::VulkanProcTable>()),
+      proc_table_(fml::MakeRefCounted<vulkan::VulkanProcTable>(VULKAN_SO_PATH)),
       shell_test_external_view_embedder_(shell_test_external_view_embedder) {}
 
 ShellTestPlatformViewVulkan::~ShellTestPlatformViewVulkan() = default;
@@ -125,8 +135,7 @@ bool ShellTestPlatformViewVulkan::OffScreenSurface::CreateSkiaGrContext() {
     return false;
   }
 
-  context->setResourceCacheLimits(vulkan::kGrCacheMaxCount,
-                                  vulkan::kGrCacheMaxByteSize);
+  context->setResourceCacheLimit(vulkan::kGrCacheMaxByteSize);
 
   context_ = context;
 
@@ -180,8 +189,11 @@ ShellTestPlatformViewVulkan::OffScreenSurface::AcquireFrame(
     return true;
   };
 
-  return std::make_unique<SurfaceFrame>(std::move(surface), true,
-                                        std::move(callback));
+  SurfaceFrame::FramebufferInfo framebuffer_info;
+  framebuffer_info.supports_readback = true;
+
+  return std::make_unique<SurfaceFrame>(
+      std::move(surface), std::move(framebuffer_info), std::move(callback));
 }
 
 GrDirectContext* ShellTestPlatformViewVulkan::OffScreenSurface::GetContext() {

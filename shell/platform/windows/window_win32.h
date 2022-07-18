@@ -14,17 +14,21 @@
 #include <vector>
 
 #include "flutter/shell/platform/embedder/embedder.h"
+#include "flutter/shell/platform/windows/direct_manipulation.h"
+#include "flutter/shell/platform/windows/keyboard_manager_win32.h"
 #include "flutter/shell/platform/windows/sequential_id_generator.h"
 #include "flutter/shell/platform/windows/text_input_manager_win32.h"
+#include "flutter/third_party/accessibility/gfx/native_widget_types.h"
 
 namespace flutter {
 
 // A class abstraction for a high DPI aware Win32 Window.  Intended to be
 // inherited from by classes that wish to specialize with custom
 // rendering and input handling.
-class WindowWin32 {
+class WindowWin32 : public KeyboardManagerWin32::WindowDelegate {
  public:
   WindowWin32();
+  WindowWin32(std::unique_ptr<TextInputManagerWin32> text_input_manager);
   virtual ~WindowWin32();
 
   // Initializes as a child window with size using |width| and |height| and
@@ -35,6 +39,20 @@ class WindowWin32 {
                        unsigned int height);
 
   HWND GetWindowHandle();
+
+  // |KeyboardManagerWin32::WindowDelegate|
+  virtual BOOL Win32PeekMessage(LPMSG lpMsg,
+                                UINT wMsgFilterMin,
+                                UINT wMsgFilterMax,
+                                UINT wRemoveMsg) override;
+
+  // |KeyboardManagerWin32::WindowDelegate|
+  virtual uint32_t Win32MapVkToChar(uint32_t virtual_key) override;
+
+  // |KeyboardManagerWin32::WindowDelegate|
+  virtual UINT Win32DispatchMessage(UINT Msg,
+                                    WPARAM wParam,
+                                    LPARAM lParam) override;
 
  protected:
   // Converts a c string to a wide unicode string.
@@ -78,6 +96,9 @@ class WindowWin32 {
   // Called when a resize occurs.
   virtual void OnResize(UINT width, UINT height) = 0;
 
+  // Called when a paint is requested.
+  virtual void OnPaint() = 0;
+
   // Called when the pointer moves within the
   // window bounds.
   virtual void OnPointerMove(double x,
@@ -101,25 +122,21 @@ class WindowWin32 {
                            UINT button) = 0;
 
   // Called when the mouse leaves the window.
-  virtual void OnPointerLeave(FlutterPointerDeviceKind device_kind,
+  virtual void OnPointerLeave(double x,
+                              double y,
+                              FlutterPointerDeviceKind device_kind,
                               int32_t device_id) = 0;
 
   // Called when the cursor should be set for the client area.
   virtual void OnSetCursor() = 0;
 
-  // Called when text input occurs.
-  virtual void OnText(const std::u16string& text) = 0;
-
-  // Called when raw keyboard input occurs.
+  // Called when the OS requests a COM object.
   //
-  // Returns true if the event was handled, indicating that DefWindowProc should
-  // not be called on the event by the main message loop.
-  virtual bool OnKey(int key,
-                     int scancode,
-                     int action,
-                     char32_t character,
-                     bool extended,
-                     bool was_down) = 0;
+  // The primary use of this function is to supply Windows with wrapped
+  // semantics objects for use by Windows accessibility.
+  LRESULT OnGetObject(UINT const message,
+                      WPARAM const wparam,
+                      LPARAM const lparam);
 
   // Called when IME composing begins.
   virtual void OnComposeBegin() = 0;
@@ -135,36 +152,43 @@ class WindowWin32 {
 
   // Called when a window is activated in order to configure IME support for
   // multi-step text input.
-  void OnImeSetContext(UINT const message,
-                       WPARAM const wparam,
-                       LPARAM const lparam);
+  virtual void OnImeSetContext(UINT const message,
+                               WPARAM const wparam,
+                               LPARAM const lparam);
 
   // Called when multi-step text input begins when using an IME.
-  void OnImeStartComposition(UINT const message,
-                             WPARAM const wparam,
-                             LPARAM const lparam);
+  virtual void OnImeStartComposition(UINT const message,
+                                     WPARAM const wparam,
+                                     LPARAM const lparam);
 
   // Called when edits/commit of multi-step text input occurs when using an IME.
-  void OnImeComposition(UINT const message,
-                        WPARAM const wparam,
-                        LPARAM const lparam);
+  virtual void OnImeComposition(UINT const message,
+                                WPARAM const wparam,
+                                LPARAM const lparam);
 
   // Called when multi-step text input ends when using an IME.
-  void OnImeEndComposition(UINT const message,
-                           WPARAM const wparam,
-                           LPARAM const lparam);
+  virtual void OnImeEndComposition(UINT const message,
+                                   WPARAM const wparam,
+                                   LPARAM const lparam);
 
   // Called when the user triggers an IME-specific request such as input
   // reconversion, where an existing input sequence is returned to composing
   // mode to select an alternative candidate conversion.
-  void OnImeRequest(UINT const message,
-                    WPARAM const wparam,
-                    LPARAM const lparam);
+  virtual void OnImeRequest(UINT const message,
+                            WPARAM const wparam,
+                            LPARAM const lparam);
+
+  // Called when the app ends IME composing, such as when the text input client
+  // is cleared or changed.
+  virtual void AbortImeComposing();
 
   // Called when the cursor rect has been updated.
   //
   // |rect| is in Win32 window coordinates.
   virtual void UpdateCursorRect(const Rect& rect);
+
+  // Called when accessibility support is enabled or disabled.
+  virtual void OnUpdateSemanticsEnabled(bool enabled) = 0;
 
   // Called when mouse scrollwheel input occurs.
   virtual void OnScroll(double delta_x,
@@ -178,6 +202,9 @@ class WindowWin32 {
 
   UINT GetCurrentHeight();
 
+  // Returns the current pixel per scroll tick value.
+  virtual float GetScrollOffsetMultiplier();
+
  protected:
   // Win32's DefWindowProc.
   //
@@ -188,19 +215,12 @@ class WindowWin32 {
                                      WPARAM wParam,
                                      LPARAM lParam);
 
-  // Win32's PeekMessage.
-  //
-  // Used to process key messages. Exposed for dependency injection.
-  virtual BOOL Win32PeekMessage(LPMSG lpMsg,
-                                HWND hWnd,
-                                UINT wMsgFilterMin,
-                                UINT wMsgFilterMax,
-                                UINT wRemoveMsg);
+  // Returns the root view accessibility node, or nullptr if none.
+  virtual gfx::NativeViewAccessible GetNativeViewAccessible() = 0;
 
-  // Win32's MapVirtualKey(*, MAPVK_VK_TO_CHAR).
-  //
-  // Used to process key messages. Exposed for dependency injection.
-  virtual uint32_t Win32MapVkToChar(uint32_t virtual_key);
+  // Handles running DirectManipulation on the window to receive trackpad
+  // gestures.
+  std::unique_ptr<DirectManipulationOwner> direct_manipulation_owner_;
 
  private:
   // Release OS resources associated with window.
@@ -212,22 +232,18 @@ class WindowWin32 {
   // Stores new width and height and calls |OnResize| to notify inheritors
   void HandleResize(UINT width, UINT height);
 
-  // Returns the type of the next WM message.
-  //
-  // The parameters limits the range of interested messages. See Win32's
-  // |PeekMessage| for information.
-  //
-  // If there's no message, returns 0.
-  //
-  // The behavior can be mocked by replacing |Win32PeekMessage|.
-  UINT PeekNextMessageType(UINT wMsgFilterMin, UINT wMsgFilterMax);
-
   // Retrieves a class instance pointer for |window|
   static WindowWin32* GetThisFromHandle(HWND const window) noexcept;
+
+  // Updates the cached scroll_offset_multiplier_ value based off OS settings.
+  void UpdateScrollOffsetMultiplier();
 
   int current_dpi_ = 0;
   int current_width_ = 0;
   int current_height_ = 0;
+
+  // Holds the conversion factor from lines scrolled to pixels scrolled.
+  float scroll_offset_multiplier_;
 
   // WM_DPICHANGED_BEFOREPARENT defined in more recent Windows
   // SDK
@@ -246,16 +262,27 @@ class WindowWin32 {
   // message.
   int keycode_for_char_message_ = 0;
 
-  std::map<uint16_t, std::u16string> text_for_scancode_on_redispatch_;
+  // Keeps track of the last mouse coordinates by a WM_MOUSEMOVE message.
+  double mouse_x_ = 0;
+  double mouse_y_ = 0;
 
   // Manages IME state.
-  TextInputManagerWin32 text_input_manager_;
+  std::unique_ptr<TextInputManagerWin32> text_input_manager_;
+
+  // Manages IME state.
+  std::unique_ptr<KeyboardManagerWin32> keyboard_manager_;
 
   // Used for temporarily storing the WM_TOUCH-provided touch points.
   std::vector<TOUCHINPUT> touch_points_;
 
   // Generates touch point IDs for touch events.
   SequentialIdGenerator touch_id_generator_;
+
+  // Timer identifier for DirectManipulation gesture polling.
+  const static int kDirectManipulationTimer = 1;
+
+  // Frequency (Hz) to poll for DirectManipulation updates.
+  int directManipulationPollingRate_ = 60;
 };
 
 }  // namespace flutter

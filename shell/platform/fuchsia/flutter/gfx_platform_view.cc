@@ -13,11 +13,13 @@ GfxPlatformView::GfxPlatformView(
     flutter::TaskRunners task_runners,
     fuchsia::ui::views::ViewRef view_ref,
     std::shared_ptr<flutter::ExternalViewEmbedder> external_view_embedder,
-    fidl::InterfaceHandle<fuchsia::ui::input::ImeService> ime_service,
-    fidl::InterfaceHandle<fuchsia::ui::input3::Keyboard> keyboard,
-    fidl::InterfaceHandle<fuchsia::ui::pointer::TouchSource> touch_source,
-    fidl::InterfaceHandle<fuchsia::ui::views::Focuser> focuser,
-    fidl::InterfaceHandle<fuchsia::ui::views::ViewRefFocused> view_ref_focused,
+    fuchsia::ui::input::ImeServiceHandle ime_service,
+    fuchsia::ui::input3::KeyboardHandle keyboard,
+    fuchsia::ui::pointer::TouchSourceHandle touch_source,
+    fuchsia::ui::pointer::MouseSourceHandle mouse_source,
+    fuchsia::ui::views::FocuserHandle focuser,
+    fuchsia::ui::views::ViewRefFocusedHandle view_ref_focused,
+    fuchsia::ui::pointerinjector::RegistryHandle pointerinjector_registry,
     fidl::InterfaceRequest<fuchsia::ui::scenic::SessionListener>
         session_listener_request,
     fit::closure on_session_listener_error_callback,
@@ -32,15 +34,18 @@ GfxPlatformView::GfxPlatformView(
     AwaitVsyncCallback await_vsync_callback,
     AwaitVsyncForSecondaryCallbackCallback
         await_vsync_for_secondary_callback_callback)
-    : PlatformView(delegate,
+    : PlatformView(false /* is_flatland */,
+                   delegate,
                    std::move(task_runners),
                    std::move(view_ref),
                    std::move(external_view_embedder),
                    std::move(ime_service),
                    std::move(keyboard),
                    std::move(touch_source),
+                   std::move(mouse_source),
                    std::move(focuser),
                    std::move(view_ref_focused),
+                   std::move(pointerinjector_registry),
                    std::move(wireframe_enabled_callback),
                    std::move(on_update_view_callback),
                    std::move(on_create_surface_callback),
@@ -82,7 +87,7 @@ void GfxPlatformView::OnScenicEvent(
                 event.gfx().metrics().metrics;
             const float new_view_pixel_ratio = metrics.scale_x;
             if (new_view_pixel_ratio <= 0.f) {
-              FML_DLOG(ERROR)
+              FML_LOG(ERROR)
                   << "Got an invalid pixel ratio from Scenic; ignoring: "
                   << new_view_pixel_ratio;
               break;
@@ -92,9 +97,6 @@ void GfxPlatformView::OnScenicEvent(
             // expensive.
             if (view_pixel_ratio_.has_value() &&
                 *view_pixel_ratio_ == new_view_pixel_ratio) {
-              FML_DLOG(ERROR)
-                  << "Got an identical pixel ratio from Scenic; ignoring: "
-                  << new_view_pixel_ratio;
               break;
             }
 
@@ -109,7 +111,7 @@ void GfxPlatformView::OnScenicEvent(
                 std::max(bounding_box.max.x - bounding_box.min.x, 0.0f),
                 std::max(bounding_box.max.y - bounding_box.min.y, 0.0f)};
             if (new_view_size[0] <= 0.f || new_view_size[1] <= 0.f) {
-              FML_DLOG(ERROR)
+              FML_LOG(ERROR)
                   << "Got an invalid view size from Scenic; ignoring: "
                   << new_view_size[0] << " " << new_view_size[1];
               break;
@@ -119,9 +121,6 @@ void GfxPlatformView::OnScenicEvent(
             // expensive.
             if (view_logical_size_.has_value() &&
                 *view_logical_size_ == new_view_size) {
-              FML_DLOG(ERROR)
-                  << "Got an identical view size from Scenic; ignoring: "
-                  << new_view_size[0] << " " << new_view_size[1];
               break;
             }
 
@@ -235,22 +234,25 @@ void GfxPlatformView::OnScenicEvent(
     const float pixel_ratio = *view_pixel_ratio_;
     const std::array<float, 2> logical_size = *view_logical_size_;
     SetViewportMetrics({
-        pixel_ratio,                    // device_pixel_ratio
-        logical_size[0] * pixel_ratio,  // physical_width
-        logical_size[1] * pixel_ratio,  // physical_height
-        0.0f,                           // physical_padding_top
-        0.0f,                           // physical_padding_right
-        0.0f,                           // physical_padding_bottom
-        0.0f,                           // physical_padding_left
-        0.0f,                           // physical_view_inset_top
-        0.0f,                           // physical_view_inset_right
-        0.0f,                           // physical_view_inset_bottom
-        0.0f,                           // physical_view_inset_left
-        0.0f,                           // p_physical_system_gesture_inset_top
-        0.0f,                           // p_physical_system_gesture_inset_right
+        pixel_ratio,                                // device_pixel_ratio
+        std::round(logical_size[0] * pixel_ratio),  // physical_width
+        std::round(logical_size[1] * pixel_ratio),  // physical_height
+        0.0f,                                       // physical_padding_top
+        0.0f,                                       // physical_padding_right
+        0.0f,                                       // physical_padding_bottom
+        0.0f,                                       // physical_padding_left
+        0.0f,                                       // physical_view_inset_top
+        0.0f,                                       // physical_view_inset_right
+        0.0f,  // physical_view_inset_bottom
+        0.0f,  // physical_view_inset_left
+        0.0f,  // p_physical_system_gesture_inset_top
+        0.0f,  // p_physical_system_gesture_inset_right
         0.0f,  // p_physical_system_gesture_inset_bottom
         0.0f,  // p_physical_system_gesture_inset_left,
         -1.0,  // p_physical_touch_slop,
+        {},    // p_physical_display_features_bounds
+        {},    // p_physical_display_features_type
+        {},    // p_physical_display_features_state
     });
   }
 }
@@ -294,6 +296,9 @@ bool GfxPlatformView::OnChildViewDisconnected(
       << "  }"
       << "}";
   auto call = out.str();
+
+  // A disconnected view cannot listen to pointer events.
+  pointer_injector_delegate_->OnDestroyView(view_id_mapping->second);
 
   std::unique_ptr<flutter::PlatformMessage> message =
       std::make_unique<flutter::PlatformMessage>(
@@ -350,6 +355,7 @@ void GfxPlatformView::OnCreateView(ViewCallback on_view_created,
 
           FML_DCHECK(weak->child_view_ids_.count(resource_id) == 0);
           weak->child_view_ids_[resource_id] = view_id;
+          weak->pointer_injector_delegate_->OnCreateView(view_id);
         });
       };
   on_create_view_callback_(view_id_raw, std::move(on_view_created),
@@ -358,10 +364,10 @@ void GfxPlatformView::OnCreateView(ViewCallback on_view_created,
 
 void GfxPlatformView::OnDisposeView(int64_t view_id_raw) {
   auto on_view_unbound =
-      [weak = weak_factory_.GetWeakPtr(),
+      [weak = weak_factory_.GetWeakPtr(), view_id = view_id_raw,
        platform_task_runner = task_runners_.GetPlatformTaskRunner()](
           scenic::ResourceId resource_id) {
-        platform_task_runner->PostTask([weak, resource_id]() {
+        platform_task_runner->PostTask([weak, resource_id, view_id]() {
           if (!weak) {
             FML_LOG(WARNING)
                 << "ViewHolder unbound from PlatformView after PlatformView"
@@ -371,6 +377,7 @@ void GfxPlatformView::OnDisposeView(int64_t view_id_raw) {
 
           FML_DCHECK(weak->child_view_ids_.count(resource_id) == 1);
           weak->child_view_ids_.erase(resource_id);
+          weak->pointer_injector_delegate_->OnDestroyView(view_id);
         });
       };
   on_destroy_view_callback_(view_id_raw, std::move(on_view_unbound));

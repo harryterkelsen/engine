@@ -7,9 +7,9 @@ import 'dart:typed_data';
 
 import 'package:ui/ui.dart' as ui;
 
-import '../../../engine.dart' show toMatrix32;
 import '../../util.dart';
 import '../../validators.dart';
+import '../../vector_math.dart';
 import 'conic.dart';
 import 'cubic.dart';
 import 'path_iterator.dart';
@@ -654,7 +654,7 @@ class SurfacePath implements ui.Path {
   }
 
   /// Appends up to four conic curves weighted to describe an oval of `radius`
-  /// and rotated by `rotation`.
+  /// and rotated by `rotation` (measured in degrees and clockwise).
   ///
   /// The first curve begins from the last point in the path and the last ends
   /// at `arcEnd`. The curves follow a path in a direction determined by
@@ -845,7 +845,7 @@ class SurfacePath implements ui.Path {
   }
 
   /// Appends up to four conic curves weighted to describe an oval of `radius`
-  /// and rotated by `rotation`.
+  /// and rotated by `rotation` (measured in degrees and clockwise).
   ///
   /// The last path point is described by (px, py).
   ///

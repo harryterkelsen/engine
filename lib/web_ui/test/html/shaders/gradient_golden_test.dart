@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:web_gl';
 
 import 'package:test/bootstrap/browser.dart';
 import 'package:test/test.dart';
@@ -13,7 +13,6 @@ import 'package:ui/ui.dart';
 
 import 'package:web_engine_tester/golden_tester.dart';
 
-import '../../common.dart';
 import '../paragraph/text_scuba.dart';
 
 // TODO(yjbanov): unskip Firefox tests when Firefox implements WebGL in headless mode.
@@ -39,10 +38,16 @@ Future<void> testMain() async {
     rc.apply(engineCanvas, screenRect);
 
     // Wrap in <flt-scene> so that our CSS selectors kick in.
-    final html.Element sceneElement = html.Element.tag('flt-scene');
+    final DomElement sceneElement = createDomElement('flt-scene');
+    if (isIosSafari) {
+      // Shrink to fit on the iPhone screen.
+      sceneElement.style.position = 'absolute';
+      sceneElement.style.transformOrigin = '0 0 0';
+      sceneElement.style.transform = 'scale(0.3)';
+    }
     try {
       sceneElement.append(engineCanvas.rootElement);
-      html.document.body!.append(sceneElement);
+      domDocument.body!.append(sceneElement);
       await matchGoldenFile('$fileName.png',
           region: region, maxDiffRatePercent: maxDiffRatePercent, write: write);
     } finally {
@@ -80,7 +85,7 @@ Future<void> testMain() async {
     GradientSweep sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
         0, 360.0 / 180.0 * math.pi,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     final GradientSweep sweepGradientRotated = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
@@ -105,7 +110,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     rectBounds = rectBounds.translate(kBoxWidth + 10, 0);
     canvas.drawRect(rectBounds,
@@ -117,7 +122,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.repeated,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     canvas.drawRect(rectBounds,
         SurfacePaint()..shader = engineGradientToShader(sweepGradient, rectBounds));
@@ -128,7 +133,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.mirror,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
     canvas.drawRect(rectBounds,
         SurfacePaint()..shader = engineGradientToShader(sweepGradient, rectBounds));
     canvas.drawRect(rectBounds, borderPaint);
@@ -159,7 +164,7 @@ Future<void> testMain() async {
     GradientSweep sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
         0, 360.0 / 180.0 * math.pi,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     final GradientSweep sweepGradientRotated = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
@@ -184,7 +189,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     rectBounds = rectBounds.translate(kBoxWidth + 10, 0);
     canvas.drawOval(rectBounds,
@@ -196,7 +201,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.repeated,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     canvas.drawOval(rectBounds,
         SurfacePaint()..shader = engineGradientToShader(sweepGradient, rectBounds));
@@ -207,7 +212,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.mirror,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
     canvas.drawOval(rectBounds,
         SurfacePaint()..shader = engineGradientToShader(sweepGradient, rectBounds));
     canvas.drawRect(rectBounds, borderPaint);
@@ -238,7 +243,7 @@ Future<void> testMain() async {
     GradientSweep sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
         0, 360.0 / 180.0 * math.pi,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     final GradientSweep sweepGradientRotated = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
@@ -265,7 +270,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.clamp,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     rectBounds = rectBounds.translate(kBoxWidth + 10, 0);
     path = samplePathFromRect(rectBounds);
@@ -278,7 +283,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.repeated,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
 
     path = samplePathFromRect(rectBounds);
     canvas.drawPath(path,
@@ -290,7 +295,7 @@ Future<void> testMain() async {
     sweepGradient = GradientSweep(const Offset(0.5, 0.5),
         colors, stops, TileMode.mirror,
         math.pi / 6, 3 * math.pi / 4,
-        Matrix4.rotationZ(math.pi / 6.0).storage);
+        null);
     path = samplePathFromRect(rectBounds);
     canvas.drawPath(path,
         SurfacePaint()..shader = engineGradientToShader(sweepGradient, rectBounds));
@@ -384,6 +389,38 @@ Future<void> testMain() async {
     canvas.apply(engineCanvas, screenRect);
   });
 
+  test('Creating lots of gradients doesn\'t create too many webgl contexts',
+      () async {
+    final DomCanvasElement sideCanvas =
+        createDomCanvasElement(width: 5, height: 5);
+    final RenderingContext? context =
+        sideCanvas.getContext('webgl') as RenderingContext?;
+    expect(context, isNotNull);
+
+    final EngineCanvas engineCanvas =
+        BitmapCanvas(const Rect.fromLTRB(0, 0, 100, 100), RenderStrategy());
+    for (double x = 0; x < 100; x += 10) {
+      for (double y = 0; y < 100; y += 10) {
+        const List<Color> colors = <Color>[
+          Color(0xFFFF0000),
+          Color(0xFF0000FF),
+        ];
+
+        final GradientLinear linearGradient = GradientLinear(
+            const Offset(0, 0),
+            const Offset(10, 10),
+            colors,
+            null,
+            TileMode.clamp,
+            Matrix4.identity().storage);
+        engineCanvas.drawRect(Rect.fromLTWH(x, y, 10, 10),
+            SurfacePaintData()..shader = linearGradient);
+      }
+    }
+
+    expect(context!.isContextLost(), isFalse);
+  }, skip: isFirefox);
+
   test('Paints clamped, rotated and shifted linear gradient', () async {
     final RecordingCanvas canvas =
     RecordingCanvas(const Rect.fromLTRB(0, 0, 400, 300));
@@ -429,6 +466,40 @@ Future<void> testMain() async {
 
     canvas.restore();
     await _checkScreenshot(canvas, 'linear_gradient_rect_clamp_rotated');
+  });
+
+  test('Paints linear gradient properly when within svg context', () async {
+    final RecordingCanvas canvas =
+    RecordingCanvas(const Rect.fromLTRB(0, 0, 500, 240));
+    canvas.save();
+
+    canvas.renderStrategy.isInsideSvgFilterTree = true;
+
+    final SurfacePaint borderPaint = SurfacePaint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = const Color(0xFF000000);
+
+    const List<Color> colors = <Color>[
+      Color(0xFFFF0000),
+      Color(0xFF0000FF),
+    ];
+
+    final GradientLinear linearGradient = GradientLinear(const Offset(125, 75),
+        const Offset(175, 125),
+        colors, null, TileMode.clamp,
+        Matrix4.identity().storage);
+
+    const double kBoxWidth = 150;
+    const double kBoxHeight = 100;
+    // Gradient with default center.
+    const Rect rectBounds = Rect.fromLTWH(100, 50, kBoxWidth, kBoxHeight);
+    canvas.drawRect(rectBounds,
+        SurfacePaint()..shader = engineLinearGradientToShader(linearGradient, rectBounds));
+    canvas.drawRect(rectBounds, borderPaint);
+
+    canvas.restore();
+    await _checkScreenshot(canvas, 'linear_gradient_in_svg_context');
   });
 }
 

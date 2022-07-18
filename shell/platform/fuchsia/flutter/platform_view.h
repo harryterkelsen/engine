@@ -33,6 +33,7 @@
 #include "flutter/shell/platform/fuchsia/flutter/vsync_waiter.h"
 #include "focus_delegate.h"
 #include "pointer_delegate.h"
+#include "pointer_injector_delegate.h"
 
 namespace flutter_runner {
 
@@ -64,16 +65,18 @@ class PlatformView : public flutter::PlatformView,
                      private fuchsia::ui::input::InputMethodEditorClient {
  public:
   PlatformView(
+      bool is_flatland,
       flutter::PlatformView::Delegate& delegate,
       flutter::TaskRunners task_runners,
       fuchsia::ui::views::ViewRef view_ref,
       std::shared_ptr<flutter::ExternalViewEmbedder> external_view_embedder,
-      fidl::InterfaceHandle<fuchsia::ui::input::ImeService> ime_service,
-      fidl::InterfaceHandle<fuchsia::ui::input3::Keyboard> keyboard,
-      fidl::InterfaceHandle<fuchsia::ui::pointer::TouchSource> touch_source,
-      fidl::InterfaceHandle<fuchsia::ui::views::Focuser> focuser,
-      fidl::InterfaceHandle<fuchsia::ui::views::ViewRefFocused>
-          view_ref_focused,
+      fuchsia::ui::input::ImeServiceHandle ime_service,
+      fuchsia::ui::input3::KeyboardHandle keyboard,
+      fuchsia::ui::pointer::TouchSourceHandle touch_source,
+      fuchsia::ui::pointer::MouseSourceHandle mouse_source,
+      fuchsia::ui::views::FocuserHandle focuser,
+      fuchsia::ui::views::ViewRefFocusedHandle view_ref_focused,
+      fuchsia::ui::pointerinjector::RegistryHandle pointerinjector_registry,
       OnEnableWireframe wireframe_enabled_callback,
       OnUpdateView on_update_view_callback,
       OnCreateSurface on_create_surface_callback,
@@ -186,6 +189,7 @@ class PlatformView : public flutter::PlatformView,
 
   std::shared_ptr<FocusDelegate> focus_delegate_;
   std::shared_ptr<PointerDelegate> pointer_delegate_;
+  std::unique_ptr<PointerInjectorDelegate> pointer_injector_delegate_;
 
   fidl::Binding<fuchsia::ui::input::InputMethodEditorClient> ime_client_;
   fuchsia::ui::input::InputMethodEditorPtr ime_;

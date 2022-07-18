@@ -2,12 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
-
 import 'package:ui/ui.dart' as ui;
 
 import '../browser_detection.dart';
-import '../dom_renderer.dart';
+import '../dom.dart';
 import '../util.dart';
 import '../vector_math.dart';
 import 'shaders/shader.dart';
@@ -26,9 +24,9 @@ class PersistedBackdropFilter extends PersistedContainerSurface
   /// [rootElement] is used to host child in front of [filterElement] that
   /// is transformed to cover background.
   @override
-  html.Element? get childContainer => _childContainer;
-  html.Element? _childContainer;
-  html.Element? _filterElement;
+  DomElement? get childContainer => _childContainer;
+  DomElement? _childContainer;
+  DomElement? _filterElement;
   ui.Rect? _activeClipBounds;
   // Cached inverted transform for [transform].
   late Matrix4 _invertedTransform;
@@ -44,10 +42,10 @@ class PersistedBackdropFilter extends PersistedContainerSurface
   }
 
   @override
-  html.Element createElement() {
-    final html.Element element = defaultCreateElement('flt-backdrop')
-      ..style.transformOrigin = '0 0 0';
-    _childContainer = html.Element.tag('flt-backdrop-interior');
+  DomElement createElement() {
+    final DomElement element = defaultCreateElement('flt-backdrop');
+    element.style.transformOrigin = '0 0 0';
+    _childContainer = createDomElement('flt-backdrop-interior');
     _childContainer!.style.position = 'absolute';
     if (debugExplainSurfaceStats) {
       // This creates an additional interior element. Count it too.
@@ -103,7 +101,7 @@ class PersistedBackdropFilter extends PersistedContainerSurface
       }
       parentSurface = parentSurface.parent;
     }
-    final html.CssStyleDeclaration filterElementStyle = _filterElement!.style;
+    final DomCSSStyleDeclaration filterElementStyle = _filterElement!.style;
     filterElementStyle
       ..position = 'absolute'
       ..left = '${left}px'
@@ -122,10 +120,10 @@ class PersistedBackdropFilter extends PersistedContainerSurface
       // Gaussian blur with standard deviation (normal distribution),
       // the blur will fall within 2 * sigma pixels.
       if (browserEngine == BrowserEngine.webkit) {
-        DomRenderer.setElementStyle(_filterElement!, '-webkit-backdrop-filter',
+        setElementStyle(_filterElement!, '-webkit-backdrop-filter',
             filter.filterAttribute);
       }
-      DomRenderer.setElementStyle(_filterElement!, 'backdrop-filter', filter.filterAttribute);
+      setElementStyle(_filterElement!, 'backdrop-filter', filter.filterAttribute);
     }
   }
 

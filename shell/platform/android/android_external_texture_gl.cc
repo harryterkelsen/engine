@@ -6,6 +6,10 @@
 
 #include <GLES/glext.h>
 
+#include "third_party/skia/include/core/SkAlphaType.h"
+#include "third_party/skia/include/core/SkColorSpace.h"
+#include "third_party/skia/include/core/SkColorType.h"
+#include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/gpu/GrBackendSurface.h"
 #include "third_party/skia/include/gpu/GrDirectContext.h"
 
@@ -38,7 +42,8 @@ void AndroidExternalTextureGL::Paint(SkCanvas& canvas,
                                      const SkRect& bounds,
                                      bool freeze,
                                      GrDirectContext* context,
-                                     const SkSamplingOptions& sampling) {
+                                     const SkSamplingOptions& sampling,
+                                     const SkPaint* paint) {
   if (state_ == AttachmentState::detached) {
     return;
   }
@@ -69,7 +74,7 @@ void AndroidExternalTextureGL::Paint(SkCanvas& canvas,
       transformAroundCenter.postTranslate(0.5, 0.5);
       canvas.concat(transformAroundCenter);
     }
-    canvas.drawImage(image, 0, 0, sampling, nullptr);
+    canvas.drawImage(image, 0, 0, sampling, paint);
   }
 }
 

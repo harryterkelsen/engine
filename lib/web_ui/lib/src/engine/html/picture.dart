@@ -2,13 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:html' as html;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ui/ui.dart' as ui;
 
-import '../dom_renderer.dart';
+import '../dom.dart';
 import '../engine_canvas.dart';
 import '../frame_reference.dart';
 import '../picture.dart';
@@ -118,12 +117,25 @@ class PersistedPicture extends PersistedLeafSurface {
   bool _requiresRepaint = false;
 
   /// Cache for reusing elements such as images across picture updates.
-  CrossFrameCache<html.HtmlElement>? _elementCache =
-      CrossFrameCache<html.HtmlElement>();
+  CrossFrameCache<DomHTMLElement>? _elementCache =
+      CrossFrameCache<DomHTMLElement>();
 
   @override
-  html.Element createElement() {
-    return defaultCreateElement('flt-picture');
+  DomElement createElement() {
+    final DomElement element = defaultCreateElement('flt-picture');
+
+    // The DOM elements used to render pictures are used purely to put pixels on
+    // the screen. They have no semantic information. If an assistive technology
+    // attempts to scan picture content it will look like garbage and confuse
+    // users. UI semantics are exported as a separate DOM tree rendered parallel
+    // to pictures.
+    //
+    // Why are layer and scene elements not hidden from ARIA? Because those
+    // elements may contain platform views, and platform views must be
+    // accessible.
+    element.setAttribute('aria-hidden', 'true');
+
+    return element;
   }
 
   @override
@@ -350,7 +362,7 @@ class PersistedPicture extends PersistedLeafSurface {
         oldSurface._canvas = null;
       }
       if (rootElement != null) {
-        domRenderer.clearDom(rootElement!);
+        removeAllChildren(rootElement!);
       }
       if (_canvas != null && _canvas != oldCanvas) {
         _recycleCanvas(_canvas);
@@ -432,7 +444,7 @@ class PersistedPicture extends PersistedLeafSurface {
     _recycleCanvas(_canvas);
     final DomCanvas domCanvas = DomCanvas(rootElement!);
     _canvas = domCanvas;
-    domRenderer.clearDom(rootElement!);
+    removeAllChildren(rootElement!);
     picture.recordingCanvas!.apply(domCanvas, _optimalLocalCullRect!);
   }
 
@@ -473,7 +485,7 @@ class PersistedPicture extends PersistedLeafSurface {
             surfaceStatsFor(this).paintPixelCount +=
                 bitmapCanvas.bitmapPixelCount;
           }
-          domRenderer.clearDom(rootElement!);
+          removeAllChildren(rootElement!);
           rootElement!.append(bitmapCanvas.rootElement);
           bitmapCanvas.clear();
           picture.recordingCanvas!.apply(bitmapCanvas, _optimalLocalCullRect!);
@@ -632,7 +644,7 @@ class PersistedPicture extends PersistedLeafSurface {
   void debugPrintChildren(StringBuffer buffer, int indent) {
     super.debugPrintChildren(buffer, indent);
     if (rootElement != null && rootElement!.firstChild != null) {
-      final html.Element firstChild = rootElement!.firstChild! as html.Element;
+      final DomElement firstChild = rootElement!.firstChild! as DomElement;
       final String canvasTag = firstChild.tagName.toLowerCase();
       final int canvasHash = firstChild.hashCode;
       buffer.writeln('${'  ' * (indent + 1)}<$canvasTag @$canvasHash />');
