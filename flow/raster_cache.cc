@@ -47,8 +47,23 @@ void RasterCacheResult::draw(SkCanvas& canvas, const SkPaint* paint) const {
 #endif
   canvas.resetMatrix();
   flow_.Step();
+
+  bool exceeds_bounds = bounds.fLeft + image_->dimensions().width() >
+                            SkScalarCeilToScalar(bounds.fRight) ||
+                        bounds.fTop + image_->dimensions().height() >
+                            SkScalarCeilToScalar(bounds.fBottom);
+
+  // Make sure raster cache doesn't bleed to physical pixels outside of
+  // original bounds. https://github.com/flutter/flutter/issues/110002
+  if (exceeds_bounds) {
+    canvas.save();
+    canvas.clipRect(SkRect::Make(bounds.roundOut()));
+  }
   canvas.drawImage(image_, bounds.fLeft, bounds.fTop, SkSamplingOptions(),
                    paint);
+  if (exceeds_bounds) {
+    canvas.restore();
+  }
 }
 
 RasterCache::RasterCache(size_t access_threshold,
@@ -171,58 +186,47 @@ bool RasterCache::Draw(const RasterCacheKeyID& id,
   return false;
 }
 
-void RasterCache::PrepareNewFrame() {
+void RasterCache::BeginFrame() {
   display_list_cached_this_frame_ = 0;
+  picture_metrics_ = {};
+  layer_metrics_ = {};
 }
 
-void RasterCache::SweepOneCacheAfterFrame(RasterCacheKey::Map<Entry>& cache,
-                                          RasterCacheMetrics& picture_metrics,
-                                          RasterCacheMetrics& layer_metrics) {
-  std::vector<RasterCacheKey::Map<Entry>::iterator> dead;
-
-  for (auto it = cache.begin(); it != cache.end(); ++it) {
+void RasterCache::UpdateMetrics() {
+  for (auto it = cache_.begin(); it != cache_.end(); ++it) {
     Entry& entry = it->second;
-
-    if (!entry.encountered_this_frame) {
-      dead.push_back(it);
-    } else if (entry.image) {
-      RasterCacheKeyKind kind = it->first.kind();
-      switch (kind) {
-        case RasterCacheKeyKind::kDisplayListMetrics:
-          picture_metrics.in_use_count++;
-          picture_metrics.in_use_bytes += entry.image->image_bytes();
-          break;
-        case RasterCacheKeyKind::kLayerMetrics:
-          layer_metrics.in_use_count++;
-          layer_metrics.in_use_bytes += entry.image->image_bytes();
-          break;
-      }
+    FML_DCHECK(entry.encountered_this_frame);
+    if (entry.image) {
+      RasterCacheMetrics& metrics = GetMetricsForKind(it->first.kind());
+      metrics.in_use_count++;
+      metrics.in_use_bytes += entry.image->image_bytes();
     }
     entry.encountered_this_frame = false;
+  }
+}
+
+void RasterCache::EvictUnusedCacheEntries() {
+  std::vector<RasterCacheKey::Map<Entry>::iterator> dead;
+
+  for (auto it = cache_.begin(); it != cache_.end(); ++it) {
+    Entry& entry = it->second;
+    if (!entry.encountered_this_frame) {
+      dead.push_back(it);
+    }
   }
 
   for (auto it : dead) {
     if (it->second.image) {
-      RasterCacheKeyKind kind = it->first.kind();
-      switch (kind) {
-        case RasterCacheKeyKind::kDisplayListMetrics:
-          picture_metrics.eviction_count++;
-          picture_metrics.eviction_bytes += it->second.image->image_bytes();
-          break;
-        case RasterCacheKeyKind::kLayerMetrics:
-          layer_metrics.eviction_count++;
-          layer_metrics.eviction_bytes += it->second.image->image_bytes();
-          break;
-      }
+      RasterCacheMetrics& metrics = GetMetricsForKind(it->first.kind());
+      metrics.eviction_count++;
+      metrics.eviction_bytes += it->second.image->image_bytes();
     }
-    cache.erase(it);
+    cache_.erase(it);
   }
 }
 
-void RasterCache::CleanupAfterFrame() {
-  picture_metrics_ = {};
-  layer_metrics_ = {};
-  SweepOneCacheAfterFrame(cache_, picture_metrics_, layer_metrics_);
+void RasterCache::EndFrame() {
+  UpdateMetrics();
   TraceStatsToTimeline();
 }
 
@@ -301,6 +305,15 @@ size_t RasterCache::EstimatePictureCacheByteSize() const {
     }
   }
   return picture_cache_bytes;
+}
+
+RasterCacheMetrics& RasterCache::GetMetricsForKind(RasterCacheKeyKind kind) {
+  switch (kind) {
+    case RasterCacheKeyKind::kDisplayListMetrics:
+      return picture_metrics_;
+    case RasterCacheKeyKind::kLayerMetrics:
+      return layer_metrics_;
+  }
 }
 
 }  // namespace flutter

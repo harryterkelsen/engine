@@ -167,6 +167,30 @@ if (build_engine_artifacts && flutter_prebuilt_dart_sdk) {
   }
 }
 
+# If there is no prebuilt sdk, create the dart sdk archive from the built sdk.
+if (build_engine_artifacts && !flutter_prebuilt_dart_sdk) {
+  zip_bundle_from_file("dart_sdk_archive") {
+    deps = [ "//third_party/dart:create_sdk" ]
+    output = "dart-sdk-$full_target_platform_name.zip"
+    files = [
+      {
+        source = rebase_path("$root_build_dir/dart-sdk")
+        destination = "dart-sdk"
+      },
+    ]
+    if (is_mac) {
+      output = "dart-sdk-darwin-$target_cpu.zip"
+      deps += [ ":dart_sdk_entitlement_config" ]
+      files += [
+        {
+          source = "$target_gen_dir/dart_sdk_entitlements.txt"
+          destination = "entitlements.txt"
+        },
+      ]
+    }
+  }
+}
+
 # Archives Flutter Web SDK
 if (!is_fuchsia) {
   group("flutter_web_sdk") {
@@ -220,12 +244,6 @@ if (is_mac) {
     data_keys = [ "snapshot_entitlement_file_path" ]
 
     deps = [ "//flutter/lib/snapshot:create_macos_gen_snapshots" ]
-  }
-
-  group("macos_flutter_framework") {
-    deps = [
-      "//flutter/shell/platform/darwin/macos:macos_flutter_framework_archive",
-    ]
   }
 
   zip_bundle("archive_gen_snapshot") {

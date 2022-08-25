@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <filesystem>
+#include <system_error>
 
 #include "flutter/fml/backtrace.h"
 #include "flutter/fml/command_line.h"
@@ -19,6 +20,21 @@
 
 namespace impeller {
 namespace compiler {
+
+// Sets the file access mode of the file at path 'p' to 0644.
+static bool SetPermissiveAccess(const std::filesystem::path& p) {
+  auto permissions =
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+      std::filesystem::perms::group_read | std::filesystem::perms::others_read;
+  std::error_code error;
+  std::filesystem::permissions(p, permissions, error);
+  if (error) {
+    std::cerr << "Failed to set access on file '" << p
+              << "': " << error.message() << std::endl;
+    return false;
+  }
+  return true;
+}
 
 bool Main(const fml::CommandLine& command_line) {
   fml::InstallCrashHandler();
@@ -85,7 +101,7 @@ bool Main(const fml::CommandLine& command_line) {
   if (TargetPlatformNeedsSL(options.target_platform)) {
     auto sl_file_name = std::filesystem::absolute(
         std::filesystem::current_path() / switches.sl_file_name);
-    const bool is_runtime_stage_data = HasSuffix(switches.sl_file_name, "iplr");
+    const bool is_runtime_stage_data = switches.iplr;
     if (is_runtime_stage_data) {
       auto reflector = compiler.GetReflector();
       if (reflector == nullptr) {
@@ -108,6 +124,11 @@ bool Main(const fml::CommandLine& command_line) {
                                 )) {
         std::cerr << "Could not write file to " << switches.sl_file_name
                   << std::endl;
+        return false;
+      }
+      // Tools that consume the runtime stage data expect the access mode to
+      // be 0644.
+      if (!SetPermissiveAccess(sl_file_name)) {
         return false;
       }
     } else {
@@ -173,6 +194,7 @@ bool Main(const fml::CommandLine& command_line) {
       case TargetPlatform::kRuntimeStageMetal:
       case TargetPlatform::kRuntimeStageGLES:
       case TargetPlatform::kSkSL:
+      case TargetPlatform::kVulkan:
         result_file = switches.sl_file_name;
         break;
       case TargetPlatform::kFlutterSPIRV:
