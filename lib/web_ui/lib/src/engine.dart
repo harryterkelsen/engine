@@ -17,7 +17,6 @@ library engine;
 
 export 'engine/alarm_clock.dart';
 export 'engine/app_bootstrap.dart';
-export 'engine/assets.dart';
 export 'engine/browser_detection.dart';
 export 'engine/canvas_pool.dart';
 export 'engine/canvaskit/canvas.dart';
@@ -139,6 +138,7 @@ export 'engine/semantics/image.dart';
 export 'engine/semantics/incrementable.dart';
 export 'engine/semantics/label_and_value.dart';
 export 'engine/semantics/live_region.dart';
+export 'engine/semantics/platform_view.dart';
 export 'engine/semantics/scrollable.dart';
 export 'engine/semantics/semantics.dart';
 export 'engine/semantics/semantics_helper.dart';

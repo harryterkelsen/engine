@@ -8,9 +8,10 @@ import 'package:meta/meta.dart';
 import 'package:ui/src/engine.dart';
 import 'package:ui/ui.dart' as ui;
 
+import '../testing.dart';
 import 'platform_location.dart';
 
-UrlStrategy _realDefaultUrlStrategy = ui.debugEmulateFlutterTesterEnvironment
+UrlStrategy _realDefaultUrlStrategy = debugEmulateFlutterTesterEnvironment
       ? TestUrlStrategy.fromEntry(const TestHistoryEntry('default', null, '/'))
       : const HashUrlStrategy();
 
@@ -179,8 +180,17 @@ class HashUrlStrategy implements UrlStrategy {
     // if the empty URL is pushed it won't replace any existing fragment. So
     // when the hash path is empty, we still return the location's path and
     // query.
-    return '${_platformLocation.pathname}${_platformLocation.search}'
-        '${internalUrl.isEmpty ? '' : '#$internalUrl'}';
+    final String hash;
+    if (internalUrl.isEmpty || internalUrl == '/') {
+      // Let's not add the hash at all when the app is in the home page. That
+      // way, the URL of the home page is cleaner.
+      //
+      // See: https://github.com/flutter/flutter/issues/127608
+      hash = '';
+    } else {
+      hash = '#$internalUrl';
+    }
+    return '${_platformLocation.pathname}${_platformLocation.search}$hash';
   }
 
   @override

@@ -803,6 +803,7 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
     _markedRect = kInvalidFirstRect;
     _cachedFirstRect = kInvalidFirstRect;
     _scribbleInteractionStatus = FlutterScribbleInteractionStatusNone;
+    _pendingDeltas = [[NSMutableArray alloc] init];
     // Initialize with the zero matrix which is not
     // an affine transform.
     _editableTransform = CATransform3D();
@@ -1251,7 +1252,7 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
 
 - (BOOL)shouldChangeTextInRange:(UITextRange*)range replacementText:(NSString*)text {
   // `temporarilyDeletedComposedCharacter` should only be used during a single text change session.
-  // So it needs to be cleared at the start of each text editting session.
+  // So it needs to be cleared at the start of each text editing session.
   self.temporarilyDeletedComposedCharacter = nil;
 
   if (self.returnKeyType == UIReturnKeyDefault && [text isEqualToString:@"\n"]) {
@@ -1631,10 +1632,21 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
 
   if (_scribbleInteractionStatus == FlutterScribbleInteractionStatusNone &&
       _scribbleFocusStatus == FlutterScribbleFocusStatusUnfocused) {
-    [self.textInputDelegate flutterTextInputView:self
-            showAutocorrectionPromptRectForStart:start
-                                             end:end
-                                      withClient:_textInputClient];
+    if (@available(iOS 17.0, *)) {
+      // Disable auto-correction highlight feature for iOS 17+.
+      // In iOS 17+, whenever a character is inserted or deleted, the system will always query
+      // the rect for every single character of the current word.
+      // GitHub Issue: https://github.com/flutter/flutter/issues/128406
+    } else {
+      // This tells the framework to show the highlight for incorrectly spelled word that is
+      // about to be auto-corrected.
+      // There is no other UITextInput API that informs about the auto-correction highlight.
+      // So we simply add the call here as a workaround.
+      [self.textInputDelegate flutterTextInputView:self
+              showAutocorrectionPromptRectForStart:start
+                                               end:end
+                                        withClient:_textInputClient];
+    }
   }
 
   NSUInteger first = start;
@@ -1656,25 +1668,6 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
   }
 
   return CGRectZero;
-}
-
-- (BOOL)isRTLAtPosition:(NSUInteger)position {
-  // _selectionRects is sorted by position already.
-  // We can use binary search.
-  NSInteger min = 0;
-  NSInteger max = [_selectionRects count];
-  while (min <= max) {
-    const NSUInteger mid = min + (max - min) / 2;
-    FlutterTextSelectionRect* rect = _selectionRects[mid];
-    if (rect.position > position) {
-      max = mid - 1;
-    } else if (rect.position == position) {
-      return rect.isRTL;
-    } else {
-      min = mid + 1;
-    }
-  }
-  return NO;
 }
 
 - (CGRect)caretRectForPosition:(UITextPosition*)position {
@@ -1699,7 +1692,8 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
     CGRect characterAfterCaret = rects[0].rect;
     // Return a zero-width rectangle along the upstream edge of the character after the caret
     // position.
-    if ([self isRTLAtPosition:index]) {
+    if ([rects[0] isKindOfClass:[FlutterTextSelectionRect class]] &&
+        ((FlutterTextSelectionRect*)rects[0]).isRTL) {
       return CGRectMake(characterAfterCaret.origin.x + characterAfterCaret.size.width,
                         characterAfterCaret.origin.y, 0, characterAfterCaret.size.height);
     } else {
@@ -1712,7 +1706,8 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
     CGRect characterAfterCaret = rects[1].rect;
     // Return a zero-width rectangle along the upstream edge of the character after the caret
     // position.
-    if ([self isRTLAtPosition:index]) {
+    if ([rects[1] isKindOfClass:[FlutterTextSelectionRect class]] &&
+        ((FlutterTextSelectionRect*)rects[1]).isRTL) {
       return CGRectMake(characterAfterCaret.origin.x + characterAfterCaret.size.width,
                         characterAfterCaret.origin.y, 0, characterAfterCaret.size.height);
     } else {
@@ -1727,7 +1722,8 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
   // For both cases, return a zero-width rectangle along the downstream edge of the character
   // before the caret position.
   CGRect characterBeforeCaret = rects[0].rect;
-  if ([self isRTLAtPosition:index - 1]) {
+  if ([rects[0] isKindOfClass:[FlutterTextSelectionRect class]] &&
+      ((FlutterTextSelectionRect*)rects[0]).isRTL) {
     return CGRectMake(characterBeforeCaret.origin.x, characterBeforeCaret.origin.y, 0,
                       characterBeforeCaret.size.height);
   } else {
@@ -1852,6 +1848,34 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
   return [FlutterTextRange rangeWithNSRange:fml::RangeForCharacterAtIndex(self.text, currentIndex)];
 }
 
+// Overall logic for floating cursor's "move" gesture and "selection" gesture:
+//
+// Floating cursor's "move" gesture takes 1 finger to force press the space bar, and then move the
+// cursor. The process starts with `beginFloatingCursorAtPoint`. When the finger is moved,
+// `updateFloatingCursorAtPoint` will be called. When the finger is released, `endFloatingCursor`
+// will be called. In all cases, we send the point (relative to the initial point registered in
+// beginFloatingCursorAtPoint) to the framework, so that framework can animate the floating cursor.
+//
+// During the move gesture, the framework only animate the cursor visually. It's only
+// after the gesture is complete, will the framework update the selection to the cursor's
+// new position (with zero selection length). This means during the animation, the visual effect
+// of the cursor is temporarily out of sync with the selection state in both framework and engine.
+// But it will be in sync again after the animation is complete.
+//
+// Floating cursor's "selection" gesture also starts with 1 finger to force press the space bar,
+// so exactly the same functions as the "move gesture" discussed above will be called. When the
+// second finger is pressed, `setSelectedText` will be called. This mechanism requires
+// `closestPositionFromPoint` to be implemented, to allow UIKit to translate the finger touch
+// location displacement to the text range to select. When the selection is completed
+// (i.e. when both of the 2 fingers are released), similar to "move" gesture,
+// the `endFloatingCursor` will be called.
+//
+// When the 2nd finger is pressed, it does not trigger another startFloatingCursor call. So
+// floating cursor move/selection logic has to be implemented in iOS embedder rather than
+// just the framework side.
+//
+// Whenever a selection is updated, the engine sends the new selection to the framework. So unlike
+// the move gesture, the selections in the framework and the engine are always kept in sync.
 - (void)beginFloatingCursorAtPoint:(CGPoint)point {
   // For "beginFloatingCursorAtPoint" and "updateFloatingCursorAtPoint", "point" is roughly:
   //
@@ -1953,13 +1977,24 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
     @"composingExtent" : @(composingExtent),
   };
 
-  NSDictionary* deltas = @{
-    @"deltas" : @[ deltaToFramework ],
-  };
+  [_pendingDeltas addObject:deltaToFramework];
 
-  [self.textInputDelegate flutterTextInputView:self
-                           updateEditingClient:_textInputClient
-                                     withDelta:deltas];
+  if (_pendingDeltas.count == 1) {
+    __weak FlutterTextInputView* weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      __strong FlutterTextInputView* strongSelf = weakSelf;
+      if (strongSelf && strongSelf.pendingDeltas.count > 0) {
+        NSDictionary* deltas = @{
+          @"deltas" : strongSelf.pendingDeltas,
+        };
+
+        [strongSelf.textInputDelegate flutterTextInputView:strongSelf
+                                       updateEditingClient:strongSelf->_textInputClient
+                                                 withDelta:deltas];
+        [strongSelf.pendingDeltas removeAllObjects];
+      }
+    });
+  }
 }
 
 - (BOOL)hasText {
@@ -2178,7 +2213,7 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
     NSMutableDictionary<NSString*, FlutterTextInputView*>* autofillContext;
 @property(nonatomic, retain) FlutterTextInputView* activeView;
 @property(nonatomic, retain) FlutterTextInputViewAccessibilityHider* inputHider;
-@property(nonatomic, readonly) id<FlutterViewResponder> viewResponder;
+@property(nonatomic, readonly, weak) id<FlutterViewResponder> viewResponder;
 @end
 
 @implementation FlutterTextInputPlugin {
@@ -2700,7 +2735,7 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
 
 #pragma mark - Methods related to Scribble support
 
-- (void)setupIndirectScribbleInteraction:(id<FlutterViewResponder>)viewResponder {
+- (void)setUpIndirectScribbleInteraction:(id<FlutterViewResponder>)viewResponder {
   if (_viewResponder != viewResponder) {
     if (@available(iOS 14.0, *)) {
       UIView* parentView = viewResponder.view;
